@@ -8,6 +8,16 @@ data class TokenResponse(
     val role: String,
 )
 
+data class EmployeeEquipment(
+    val category: String,
+    val name: String,
+    val serial_number: String,
+    val registry_number: String,
+    val certificate_number: String,
+    val verification_date: String,
+    val arshin_url: String,
+)
+
 data class UserProfile(
     val login: String,
     val role: String,
@@ -18,6 +28,7 @@ data class UserProfile(
     val work_schedule: String,
     val max_applications: String,
     val folder_number: String,
+    val equipment: List<EmployeeEquipment> = emptyList(),
 )
 
 data class ApplicationSummary(
@@ -28,6 +39,9 @@ data class ApplicationSummary(
     val client: String,
     val interval: String,
     val status: String,
+    val phone_number: String,
+    val barrier: String,
+    val comments: String,
 )
 
 data class ApplicationStatusCount(val status: String, val count: Int)
@@ -47,6 +61,50 @@ data class WaterMeter(
     val reading: String,
 )
 
+data class ApplicationPhoto(
+    val field: String,
+    val title: String,
+    val filename: String,
+    val content_base64: String,
+)
+
+data class PhotoContent(val content_base64: String)
+
+data class NomenclatureItem(
+    val id: Long,
+    val name: String,
+    val price: String,
+    val quantity: String,
+    val total: String,
+)
+
+data class PriceListItem(
+    val id: Long,
+    val name: String,
+    val price: String,
+)
+
+data class AddNomenclatureRequest(
+    val price_list_id: Long,
+    val quantity: Int,
+)
+
+data class AddMeterRequest(
+    val device_kind: String,
+    val meter_type: String = "",
+    val serial_number: String = "",
+    val registry_number: String = "",
+    val year: String = "",
+    val last_check: String = "",
+    val next_check: String = "",
+)
+
+data class UploadPhotoRequest(
+    val field: String,
+    val filename: String,
+    val content_base64: String,
+)
+
 data class ApplicationDetails(
     val id: Long,
     val number: String,
@@ -64,6 +122,8 @@ data class ApplicationDetails(
     val comments: String,
     val metrolog_comments: String,
     val water_meters: List<WaterMeter>,
+    val photos: List<ApplicationPhoto>,
+    val nomenclature: List<NomenclatureItem>,
 )
 
 data class CloseApplicationRequest(

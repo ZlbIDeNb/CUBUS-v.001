@@ -3,6 +3,7 @@ package ru.zilisnik.mobile.data
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.DELETE
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -49,4 +50,52 @@ interface ApiService {
         @Header("Idempotency-Key") idempotencyKey: String,
         @Path("id") id: Long,
     ): OperationResult
+
+    @POST("api/v1/applications/{id}/photos")
+    suspend fun uploadPhoto(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Body request: UploadPhotoRequest,
+    )
+
+    @GET("api/v1/applications/{id}/photos/content")
+    suspend fun photoContent(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Query("field") field: String,
+        @Query("filename") filename: String,
+    ): PhotoContent
+
+    @GET("api/v1/applications/{id}/nomenclature")
+    suspend fun nomenclature(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+    ): List<NomenclatureItem>
+
+    @GET("api/v1/price-list")
+    suspend fun priceList(
+        @Header("Authorization") authorization: String,
+    ): List<PriceListItem>
+
+    @POST("api/v1/applications/{id}/nomenclature")
+    suspend fun addNomenclature(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Body request: AddNomenclatureRequest,
+    )
+
+    @POST("api/v1/applications/{id}/meters")
+    suspend fun addMeter(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Body request: AddMeterRequest,
+    )
+
+    @DELETE("api/v1/applications/{id}/photos")
+    suspend fun deletePhoto(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Query("field") field: String,
+        @Query("filename") filename: String,
+    )
 }

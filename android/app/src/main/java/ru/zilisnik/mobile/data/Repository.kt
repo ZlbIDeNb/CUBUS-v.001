@@ -1,6 +1,8 @@
 package ru.zilisnik.mobile.data
 
+import com.google.gson.JsonParser
 import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.HttpException
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -54,6 +56,38 @@ class Repository {
 
     suspend fun sendToRework(id: Long): OperationResult =
         api.sendToRework(auth(), UUID.randomUUID().toString(), id)
+
+    suspend fun uploadPhoto(id: Long, request: UploadPhotoRequest) {
+        api.uploadPhoto(auth(), id, request)
+    }
+
+    suspend fun photoContent(id: Long, field: String, filename: String): PhotoContent =
+        try {
+            api.photoContent(auth(), id, field, filename)
+        } catch (error: HttpException) {
+            val body = error.response()?.errorBody()?.string().orEmpty()
+            val detail = runCatching {
+                JsonParser.parseString(body).asJsonObject["detail"].asString
+            }.getOrNull()
+            throw IllegalStateException(detail ?: "HTTP ${error.code()}")
+        }
+
+    suspend fun nomenclature(id: Long): List<NomenclatureItem> =
+        api.nomenclature(auth(), id)
+
+    suspend fun priceList(): List<PriceListItem> = api.priceList(auth())
+
+    suspend fun addNomenclature(id: Long, request: AddNomenclatureRequest) {
+        api.addNomenclature(auth(), id, request)
+    }
+
+    suspend fun addMeter(id: Long, request: AddMeterRequest) {
+        api.addMeter(auth(), id, request)
+    }
+
+    suspend fun deletePhoto(id: Long, field: String, filename: String) {
+        api.deletePhoto(auth(), id, field, filename)
+    }
 
     private fun auth(): String = "Bearer ${requireNotNull(token) { "Требуется вход" }}"
 }

@@ -32,11 +32,24 @@ class ApplicationSummary(BaseModel):
     client: str = ""
     interval: str = ""
     status: str
+    phone_number: str = ""
+    barrier: str = ""
+    comments: str = ""
 
 
 class ApplicationStatusCount(BaseModel):
     status: str
     count: int = Field(ge=0)
+
+
+class EmployeeEquipment(BaseModel):
+    category: str
+    name: str = ""
+    serial_number: str = ""
+    registry_number: str = ""
+    certificate_number: str = ""
+    verification_date: str = ""
+    arshin_url: str = ""
 
 
 class EmployeeProfile(BaseModel):
@@ -49,6 +62,7 @@ class EmployeeProfile(BaseModel):
     work_schedule: str = ""
     max_applications: str = ""
     folder_number: str = ""
+    equipment: list[EmployeeEquipment] = Field(default_factory=list)
 
 
 class WaterMeter(BaseModel):
@@ -66,16 +80,61 @@ class WaterMeter(BaseModel):
     reading: str = ""
 
 
+class ApplicationPhoto(BaseModel):
+    field: str
+    title: str
+    filename: str
+    content_base64: str = ""
+
+
+class PhotoContent(BaseModel):
+    content_base64: str = ""
+
+
+class NomenclatureItem(BaseModel):
+    id: int
+    name: str = ""
+    price: str = ""
+    quantity: str = ""
+    total: str = ""
+
+
+class PriceListItem(BaseModel):
+    id: int
+    name: str = ""
+    price: str = ""
+
+
+class AddNomenclatureRequest(BaseModel):
+    price_list_id: int
+    quantity: int = Field(default=1, ge=1)
+
+
+class AddMeterRequest(BaseModel):
+    device_kind: str
+    meter_type: str = ""
+    serial_number: str = ""
+    registry_number: str = ""
+    year: str = ""
+    last_check: str = ""
+    next_check: str = ""
+
+
+class UploadPhotoRequest(BaseModel):
+    field: str
+    filename: str
+    content_base64: str
+
+
 class ApplicationDetails(ApplicationSummary):
-    phone_number: str = ""
     phone_number_2: str = ""
     floor: str = ""
     entrance: str = ""
     entrance_code: str = ""
-    barrier: str = ""
-    comments: str = ""
     metrolog_comments: str = ""
     water_meters: list[WaterMeter] = Field(default_factory=list)
+    photos: list[ApplicationPhoto] = Field(default_factory=list)
+    nomenclature: list[NomenclatureItem] = Field(default_factory=list)
 
 
 class CloseApplicationRequest(BaseModel):
