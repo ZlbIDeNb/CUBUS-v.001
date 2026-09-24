@@ -44,6 +44,11 @@ interface ApiService {
         @Query("work_date") workDate: String,
     ): List<MaterialUsageItem>
 
+    @GET("api/v1/metrolog-warehouse")
+    suspend fun metrologWarehouse(
+        @Header("Authorization") authorization: String,
+    ): List<WarehouseItem>
+
     @GET("api/v1/applications/{id}")
     suspend fun application(
         @Header("Authorization") authorization: String,

@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:allowBackup="false"
-        android:label="Zilisnik"
+        android:label="CUBUS v. 1.02"
         android:supportsRtl="true"
         android:theme="@style/Theme.Zilisnik"
         android:usesCleartextTraffic="false">
@@ -17,4 +17,3 @@
         </activity>
     </application>
 </manifest>
-

@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -34,15 +36,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
+import androidx.compose.material3.Button as MaterialButton
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
+import androidx.compose.material3.Card as MaterialCard
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
@@ -51,15 +56,18 @@ import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChip as MaterialFilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberDatePickerState
@@ -78,9 +86,12 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
@@ -95,6 +106,7 @@ import ru.zilisnik.mobile.data.MeterCatalogItem
 import ru.zilisnik.mobile.data.UserProfile
 import ru.zilisnik.mobile.data.ScheduleDay
 import ru.zilisnik.mobile.data.WaterMeter
+import ru.zilisnik.mobile.data.WarehouseItem
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Calendar
@@ -102,14 +114,182 @@ import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.roundToInt
 
+private val CubusColorScheme = lightColorScheme(
+    primary = Color(0xFF2B5A78),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFCFE3EF),
+    onPrimaryContainer = Color(0xFF0C202C),
+    secondary = Color(0xFF3E657D),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFD8E7EF),
+    onSecondaryContainer = Color(0xFF102630),
+    tertiary = Color(0xFF476875),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFD5E7EC),
+    onTertiaryContainer = Color(0xFF102328),
+    background = Color(0xFFF7FAFC),
+    onBackground = Color(0xFF172126),
+    surface = Color(0xFFF7FAFC),
+    onSurface = Color(0xFF172126),
+    surfaceVariant = Color(0xFFE2EDF2),
+    onSurfaceVariant = Color(0xFF3D4B54),
+    outline = Color(0xFF718793),
+)
+
+private val CubusBlockColor = Color(0xFFE2EDF2)
+private val CubusButtonColor = Color(0xFF2B5A78)
+private val WarehouseBlockColor = Color(0xFFE2EDF2)
+private val CubusComponentShape = RoundedCornerShape(12.dp)
+private fun normalizeWarehouseName(value: String): String = value
+    .lowercase(Locale("ru"))
+    .replace('ё', 'е')
+    .replace(Regex("[^0-9a-zа-я]+"), " ")
+    .trim()
+
+private val warehouseDisplayOrder = mapOf(
+    normalizeWarehouseName("Счетчик ЭКО НОМ СВ 15-80") to 1,
+    normalizeWarehouseName("Счетчик ЭКО НОМ СВ 15-100") to 2,
+    normalizeWarehouseName("Счетчик ХВС ITELMA WFK24.D080 (Импульс)") to 3,
+    normalizeWarehouseName("Счетчик ГВС ITELMA WFW24.D080 (Импульс)") to 4,
+    normalizeWarehouseName("Счетчик ХВС/ГВС УНИВЕРСАЛЬНЫЙ.D080 (Импульс)") to 5,
+    normalizeWarehouseName("Обратный клапан (Таблетка)") to 6,
+    normalizeWarehouseName("Кран 1/2") to 7,
+    normalizeWarehouseName("Муфта 1/2") to 8,
+    normalizeWarehouseName("Нипель 1/2") to 9,
+    normalizeWarehouseName("Ниппель 1/2") to 9,
+    normalizeWarehouseName("Угол 1/2") to 10,
+    normalizeWarehouseName("Угол 1/2 (Цанга)") to 11,
+    normalizeWarehouseName("Угол Муфта 1/2") to 12,
+    normalizeWarehouseName("Футорка В/Р 3/4 на 1/2") to 13,
+    normalizeWarehouseName("Футорка Н/Р 3/4 на 1/2") to 14,
+    normalizeWarehouseName("Цанга 1/2 (прямая, внешняя резьба)") to 15,
+    normalizeWarehouseName("Цанга 1/2 (прямая, внутренняя резьба)") to 17,
+    normalizeWarehouseName("Удлинитель 10мм") to 18,
+    normalizeWarehouseName("Удлинитель 20мм") to 19,
+    normalizeWarehouseName("Удлинитель 30мм") to 20,
+    normalizeWarehouseName("Удлинитель 40мм") to 21,
+    normalizeWarehouseName("Удлинитель 50мм") to 22,
+    normalizeWarehouseName("Тройник 112") to 23,
+    normalizeWarehouseName("Тройник 1/2") to 23,
+    normalizeWarehouseName("Аэратор") to 24,
+    normalizeWarehouseName("Гибкая подводка воды 80 см") to 25,
+    normalizeWarehouseName("Труба Металлопласт (1м)") to 26,
+    normalizeWarehouseName("Проволока пломбировочная витая 0.65/100") to 27,
+    normalizeWarehouseName("Прокладка (Упаковка 100шт.)") to 28,
+    normalizeWarehouseName("Лён") to 29,
+)
+private val warehouseItemComparator = compareBy<WarehouseItem>(
+    { warehouseDisplayOrder[normalizeWarehouseName(it.name)] ?: Int.MAX_VALUE },
+    { normalizeWarehouseName(it.name) },
+)
+
+private fun warehouseNameFontSize(value: String) = when {
+    value.length <= 28 -> 12.sp
+    value.length <= 40 -> 10.sp
+    value.length <= 55 -> 8.sp
+    else -> 7.sp
+}
+
+private val CubusShapes = Shapes(
+    small = CubusComponentShape,
+    medium = CubusComponentShape,
+    large = CubusComponentShape,
+)
+
+@Composable
+private fun Button(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
+    content: @Composable RowScope.() -> Unit,
+) {
+    MaterialButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        contentPadding = contentPadding,
+        shape = CubusComponentShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = CubusButtonColor,
+            contentColor = Color.White,
+            disabledContainerColor = CubusButtonColor.copy(alpha = 0.38f),
+            disabledContentColor = Color.White.copy(alpha = 0.70f),
+        ),
+        content = content,
+    )
+}
+
+@Composable
+private fun TextButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        contentPadding = contentPadding,
+        content = content,
+    )
+}
+
+@Composable
+private fun FilterChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    MaterialFilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = label,
+        modifier = modifier,
+        enabled = enabled,
+        shape = CubusComponentShape,
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = CubusButtonColor,
+            selectedLabelColor = Color.White,
+        ),
+    )
+}
+
+@Composable
+private fun Card(
+    modifier: Modifier = Modifier,
+    containerColor: Color = CubusBlockColor,
+    border: BorderStroke? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    MaterialCard(
+        modifier = modifier,
+        shape = CubusComponentShape,
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = border,
+        content = content,
+    )
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { ZilisnikApp() } }
+        setContent {
+            MaterialTheme(
+                colorScheme = CubusColorScheme,
+                shapes = CubusShapes,
+            ) {
+                ZilisnikApp()
+            }
+        }
     }
 }
 
-private enum class AppSection { MAIN, PROFILE, APPLICATIONS }
+private enum class AppSection { MAIN, PROFILE, APPLICATIONS, WAREHOUSE, SERVICE }
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -128,11 +308,25 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
     }
 
     if (!state.authorized) {
-        Scaffold(topBar = { TopAppBar(title = { Text("Zilisnik") }) }) { padding ->
+        Scaffold { padding ->
             Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                AppHeading("CUBUS v. 1.02")
+                Image(
+                    painter = painterResource(R.drawable.cubus_logo),
+                    contentDescription = "Жилищник — служба метрологии",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .aspectRatio(702f / 389f),
+                )
                 state.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
                 if (state.loading) {
                     Column(
@@ -158,12 +352,18 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
             }
         }
     }
+    LaunchedEffect(state.message) {
+        if (state.message != null) {
+            delay(10_000)
+            vm.clearMessage()
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
-                Text("Zilisnik", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
+                Text("CUBUS v. 1.02", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
                 DrawerItem("Основной экран", AppSection.MAIN, section) {
                     navigateTo(AppSection.MAIN)
                     scope.launch { drawerState.close() }
@@ -174,6 +374,15 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                 }
                 DrawerItem("Заявки", AppSection.APPLICATIONS, section) {
                     navigateTo(AppSection.APPLICATIONS)
+                    scope.launch { drawerState.close() }
+                }
+                DrawerItem("Склад метролога", AppSection.WAREHOUSE, section) {
+                    navigateTo(AppSection.WAREHOUSE)
+                    vm.loadWarehouse()
+                    scope.launch { drawerState.close() }
+                }
+                DrawerItem("Сервис", AppSection.SERVICE, section) {
+                    navigateTo(AppSection.SERVICE)
                     scope.launch { drawerState.close() }
                 }
             }
@@ -188,6 +397,8 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                                 AppSection.MAIN -> "Основной экран"
                                 AppSection.PROFILE -> "Личный кабинет"
                                 AppSection.APPLICATIONS -> "Заявки"
+                                AppSection.WAREHOUSE -> "Склад метролога"
+                                AppSection.SERVICE -> "Сервис"
                             },
                             style = MaterialTheme.typography.headlineSmall,
                             textAlign = TextAlign.Center,
@@ -196,8 +407,13 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                     },
                     navigationIcon = {
                         if (state.selected != null || section != AppSection.MAIN) {
-                            Button(
-                                onClick = {
+                            Image(
+                                painter = painterResource(R.drawable.back_button),
+                                contentDescription = "Назад",
+                                modifier = Modifier
+                                    .padding(start = 4.dp)
+                                    .size(52.dp)
+                                    .clickable {
                                     if (state.selected != null) {
                                         vm.back()
                                     } else {
@@ -206,14 +422,16 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                                         section = target
                                     }
                                 },
-                                modifier = Modifier.padding(horizontal = 4.dp),
-                            ) {
-                                Text("←", style = MaterialTheme.typography.headlineSmall)
-                            }
+                            )
                         } else {
-                            TextButton(onClick = { scope.launch { drawerState.open() } }) {
-                                Text("☰", style = MaterialTheme.typography.headlineSmall)
-                            }
+                            Image(
+                                painter = painterResource(R.drawable.menu_icon),
+                                contentDescription = "Открыть меню",
+                                modifier = Modifier
+                                    .padding(start = 4.dp)
+                                    .size(52.dp)
+                                    .clickable { scope.launch { drawerState.open() } },
+                            )
                         }
                     },
                 )
@@ -223,13 +441,14 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                 modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                state.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
                 when {
                     state.selected != null && state.completionWizard -> CompletionWizardScreen(
                         details = state.selected!!,
                         priceList = state.priceList,
                         meterCatalog = state.meterCatalog,
                         meterCatalogError = state.meterCatalogError,
+                        nomenclatureLoading = state.nomenclatureLoading,
+                        nomenclatureError = state.nomenclatureError,
                         onBack = vm::back,
                         onUploadPhoto = vm::uploadPhoto,
                         onAddNomenclature = vm::addNomenclature,
@@ -270,13 +489,35 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         vm::selectScheduleMonth,
                         vm::refreshSchedule,
                     )
-                    else -> ApplicationsScreen(
+                    section == AppSection.APPLICATIONS -> ApplicationsScreen(
                         applications = state.applications,
                         selectedDayOffset = state.applicationDayOffset,
                         onDaySelect = vm::selectApplicationDay,
                         onOpen = vm::select,
                         onComplete = vm::startCompletion,
                         onRework = vm::prepareRework,
+                    )
+                    section == AppSection.WAREHOUSE -> WarehouseScreen(
+                        warehouseItems = state.warehouseItems,
+                        loading = state.warehouseLoading,
+                        error = state.warehouseError,
+                        onRefresh = vm::loadWarehouse,
+                    )
+                    else -> ServiceScreen(
+                        priceListCount = state.priceList.size,
+                        meterCatalogCount = state.meterCatalog.size,
+                        refreshing = state.serviceRefreshing,
+                        onRefreshCatalogs = vm::refreshReferenceCatalogs,
+                        onLoadPriceList = vm::loadPriceList,
+                    )
+                }
+                state.message?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
@@ -291,6 +532,158 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
             onConfirm = vm::sendToRework,
         )
     }
+}
+
+@Composable
+private fun ColumnScope.WarehouseScreen(
+    warehouseItems: List<WarehouseItem>,
+    loading: Boolean,
+    error: String?,
+    onRefresh: () -> Unit,
+) {
+    AppHeading("Склад метролога")
+    when {
+        loading -> Box(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            contentAlignment = Alignment.Center,
+        ) { CircularProgressIndicator() }
+        error != null -> Card(Modifier.fillMaxWidth()) {
+            Text(
+                error,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+            )
+        }
+        warehouseItems.isEmpty() -> Card(Modifier.fillMaxWidth()) {
+            Text(
+                "На складе метролога нет позиций",
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+            )
+        }
+        else -> LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(bottom = 12.dp),
+        ) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "НАИМЕНОВАНИЕ",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "Кол-во",
+                        style = MaterialTheme.typography.labelLarge,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.width(76.dp),
+                    )
+                }
+            }
+            items(warehouseItems.sortedWith(warehouseItemComparator), key = { it.id }) { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Card(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        containerColor = WarehouseBlockColor,
+                        border = BorderStroke(1.dp, CubusButtonColor),
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text(
+                                item.name.ifBlank { "Позиция № ${item.id}" },
+                                fontSize = warehouseNameFontSize(item.name),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Clip,
+                            )
+                        }
+                    }
+                    Card(
+                        modifier = Modifier.width(76.dp).fillMaxHeight(),
+                        containerColor = WarehouseBlockColor,
+                        border = BorderStroke(1.dp, CubusButtonColor),
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                item.balance.ifBlank { "0" },
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Button(
+        modifier = Modifier.fillMaxWidth(),
+        enabled = !loading,
+        onClick = onRefresh,
+    ) { Text(if (loading) "Загружаем…" else "Обновить склад") }
+}
+
+@Composable
+private fun ColumnScope.ServiceScreen(
+    priceListCount: Int,
+    meterCatalogCount: Int,
+    refreshing: String?,
+    onRefreshCatalogs: () -> Unit,
+    onLoadPriceList: () -> Unit,
+) {
+    AppHeading("Сервис")
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Справочник ИПУ", style = MaterialTheme.typography.titleMedium)
+            Text("Сохранено записей: $meterCatalogCount")
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = refreshing == null,
+                onClick = onRefreshCatalogs,
+            ) {
+                Text(if (refreshing == "catalogs") "Обновляем…" else "Обновить справочники")
+            }
+        }
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Прайс-лист", style = MaterialTheme.typography.titleMedium)
+            Text("Сохранено позиций: $priceListCount")
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = refreshing == null,
+                onClick = onLoadPriceList,
+            ) {
+                Text(if (refreshing == "price-list") "Загружаем…" else "Загрузить Прайс Лист")
+            }
+        }
+    }
+    Text(
+        "Данные сохраняются в локальной базе приложения и используются без повторного обращения к КБ.",
+        style = MaterialTheme.typography.bodySmall,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
@@ -310,10 +703,20 @@ private fun DrawerItem(
 @Composable
 private fun RegistrationScreen(onRegister: (String, String) -> Unit) {
     var code by remember { mutableStateOf("") }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         AppHeading("Регистрация устройства")
-        OutlinedTextField(code, { code = it }, label = { Text("Код регистрации") })
+        OutlinedTextField(
+            value = code,
+            onValueChange = { code = it },
+            label = { Text("Код регистрации") },
+            modifier = Modifier.fillMaxWidth(),
+        )
         Button(
+            modifier = Modifier.fillMaxWidth(),
             enabled = code.length >= 4,
             onClick = { onRegister(code, "${Build.MANUFACTURER} ${Build.MODEL}") },
         ) { Text("Продолжить") }
@@ -341,7 +744,12 @@ private fun ColumnScope.MainScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         AppHeading(profile?.full_name?.ifBlank { profile.login } ?: "Метролог")
-        Text(formatter.format(now), style = MaterialTheme.typography.titleLarge)
+        Text(
+            formatter.format(now),
+            style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
         AppHeading("Статистика на сегодня")
         StatusCard(
             "Новые",
@@ -453,10 +861,7 @@ private fun ColumnScope.ProfileScreen(
             CollapsibleSection(
                 title = equipment.category,
                 initiallyExpanded = false,
-                actionLabel = "Сообщить",
-                onAction = {
-                    openWebPage(context, "https://t.me/+QlRfXDUiO4syMjFi")
-                },
+                compactHeader = true,
             ) {
                 ProfileLine("Наименование", equipment.name)
                 ProfileLine("Серийный номер", equipment.serial_number)
@@ -474,6 +879,10 @@ private fun ColumnScope.ProfileScreen(
                         openWebPage(context, equipment.arshin_url)
                     }
                 }
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { openWebPage(context, "https://t.me/+QlRfXDUiO4syMjFi") },
+                ) { Text("Сообщить о неточности") }
             }
         }
     }
@@ -676,6 +1085,7 @@ private fun ApplicationCard(
     onRework: (Long) -> Unit,
 ) {
     val context = LocalContext.current
+    var actionsExpanded by remember(item.id) { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -687,6 +1097,7 @@ private fun ApplicationCard(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
+            HorizontalDivider()
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -694,11 +1105,8 @@ private fun ApplicationCard(
                 CompactInformationLine("Дата выезда", item.work_date.orEmpty(), Modifier.weight(1f))
                 CompactInformationLine("Интервал", item.interval, Modifier.weight(1f))
             }
+            HorizontalDivider()
             InlineInformationLine("ФИО клиента", item.client)
-            InlineActionInformationLine("Адрес", item.address) {
-                openNavigator(context, item.address)
-            }
-            InlineInformationLine("Шлагбаум", item.barrier)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -710,15 +1118,36 @@ private fun ApplicationCard(
                     "Телефон 2", item.phone_number_2, Modifier.weight(1f)
                 ) { openDialer(context, item.phone_number_2) }
             }
+            HorizontalDivider()
+            InlineActionInformationLine("Адрес", item.address) {
+                openNavigator(context, item.address)
+            }
+            HorizontalDivider()
+            InlineInformationLine("Шлагбаум", item.barrier)
             InlineInformationLine("Комментарий", item.comments)
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { onOpen(item.id) }) {
-                Text("Открыть заявку")
-            }
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { onComplete(item.id) }) {
-                Text("Завершить заявку")
-            }
-            Button(modifier = Modifier.fillMaxWidth(), onClick = { onRework(item.id) }) {
-                Text("Передать на доработку")
+            HorizontalDivider()
+            Box(Modifier.fillMaxWidth()) {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { actionsExpanded = true },
+                ) { Text("ОТКРЫТЬ ЗАЯВКУ") }
+                DropdownMenu(
+                    expanded = actionsExpanded,
+                    onDismissRequest = { actionsExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("ОТКРЫТЬ ЗАЯВКУ") },
+                        onClick = { actionsExpanded = false; onOpen(item.id) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Завершить заявку") },
+                        onClick = { actionsExpanded = false; onComplete(item.id) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Передать на доработку") },
+                        onClick = { actionsExpanded = false; onRework(item.id) },
+                    )
+                }
             }
         }
     }
@@ -730,6 +1159,8 @@ private fun ColumnScope.CompletionWizardScreen(
     priceList: List<PriceListItem>,
     meterCatalog: List<MeterCatalogItem>,
     meterCatalogError: String?,
+    nomenclatureLoading: Boolean,
+    nomenclatureError: String?,
     onBack: () -> Unit,
     onUploadPhoto: (Long, String, String, String) -> Unit,
     onAddNomenclature: (Long, Long, Int, String?) -> Unit,
@@ -767,7 +1198,8 @@ private fun ColumnScope.CompletionWizardScreen(
     var paymentType by rememberSaveable(details.id) { mutableStateOf("Наличные") }
     var cashSum by rememberSaveable(details.id) { mutableStateOf("0") }
     var cardSum by rememberSaveable(details.id) { mutableStateOf("0") }
-    var priceMenu by remember { mutableStateOf(false) }
+    var serviceMenu by remember { mutableStateOf(false) }
+    var materialMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val currentPhotoType = photoTypes[photoIndex.coerceIn(0, photoTypes.lastIndex)]
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -804,6 +1236,8 @@ private fun ColumnScope.CompletionWizardScreen(
         }
     }
     val selectedPrice = priceList.firstOrNull { it.id == selectedPriceId }
+    val servicePriceList = priceList.filter { it.item_kind == "service" }
+    val materialPriceList = priceList.filter { it.item_kind == "material" }
     val calculatedAmount = ((selectedPrice?.price
         ?.replace(" ", "")?.replace(",", ".")?.toDoubleOrNull() ?: 0.0) *
         (quantity.toIntOrNull() ?: 0)).let { value ->
@@ -938,31 +1372,104 @@ private fun ColumnScope.CompletionWizardScreen(
 
             1 -> {
                 AppHeading("Номенклатура")
-                if (details.nomenclature.isEmpty()) Text("Позиции пока не добавлены")
+                when {
+                    nomenclatureLoading -> Text("Загружаем номенклатуру…")
+                    nomenclatureError != null -> Text(
+                        nomenclatureError,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    details.nomenclature.isEmpty() -> Text("Позиции пока не добавлены")
+                }
                 details.nomenclature.forEach { item ->
                     Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            InformationLine("Наименование", item.name)
-                            InformationLine("Цена", item.price)
-                            InformationLine("Кол-во", item.quantity)
-                            InformationLine("Сумма", item.total)
-                            Button(onClick = { onDeleteNomenclature(details.id, item.id) }) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                "Наименование",
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontSize = 16.sp,
+                                ),
+                            )
+                            Text(item.name, style = MaterialTheme.typography.titleMedium)
+                            HorizontalDivider()
+                            Text(
+                                "Цена ${item.price}  |  Кол-во ${item.quantity}  |  Сумма ${item.total}",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Button(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = { onDeleteNomenclature(details.id, item.id) },
+                            ) {
                                 Text("Удалить позицию")
                             }
                         }
                     }
                 }
-                Box {
-                    Button(onClick = { priceMenu = true }) {
-                        Text(selectedPrice?.name ?: "Выбрать из актуального прайс-листа")
+                if (priceList.isEmpty()) Text("Загружаем актуальный прайс-лист…")
+                Box(Modifier.fillMaxWidth()) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = servicePriceList.isNotEmpty(),
+                        onClick = { serviceMenu = true },
+                    ) {
+                        Text(
+                            if (selectedPrice?.item_kind == "service") selectedPrice.name
+                            else "Выбрать услуги",
+                        )
                     }
-                    DropdownMenu(priceMenu, { priceMenu = false }) {
-                        priceList.forEach { item ->
+                    DropdownMenu(
+                        expanded = serviceMenu,
+                        onDismissRequest = { serviceMenu = false },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Spacer(Modifier.height(56.dp))
+                        Button(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                            onClick = { serviceMenu = false },
+                        ) { Text("Назад") }
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider()
+                        servicePriceList.forEach { item ->
                             DropdownMenuItem(
                                 text = { Text("${item.name} — ${item.price}") },
-                                onClick = { selectedPriceId = item.id; priceMenu = false },
+                                onClick = { selectedPriceId = item.id; serviceMenu = false },
                             )
                         }
+                        Spacer(Modifier.height(56.dp))
+                    }
+                }
+                Box(Modifier.fillMaxWidth()) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = materialPriceList.isNotEmpty(),
+                        onClick = { materialMenu = true },
+                    ) {
+                        Text(
+                            if (selectedPrice?.item_kind == "material") selectedPrice.name
+                            else "Материалы",
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = materialMenu,
+                        onDismissRequest = { materialMenu = false },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Spacer(Modifier.height(56.dp))
+                        Button(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                            onClick = { materialMenu = false },
+                        ) { Text("Назад") }
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider()
+                        materialPriceList.forEach { item ->
+                            DropdownMenuItem(
+                                text = { Text("${item.name} — ${item.price}") },
+                                onClick = { selectedPriceId = item.id; materialMenu = false },
+                            )
+                        }
+                        Spacer(Modifier.height(56.dp))
                     }
                 }
                 OutlinedTextField(
@@ -996,6 +1503,7 @@ private fun ColumnScope.CompletionWizardScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Button(
+                    modifier = Modifier.fillMaxWidth(),
                     enabled = selectedPriceId != null && (quantity.toIntOrNull() ?: 0) > 0 &&
                         (if (usePriceListAmount) calculatedAmount else customAmount)
                             .replace(',', '.').toDoubleOrNull() != null,
@@ -1008,9 +1516,18 @@ private fun ColumnScope.CompletionWizardScreen(
                         )
                     },
                 ) { Text("Добавить номенклатуру") }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { step = 0 }) { Text("Назад") }
-                    Button(onClick = { step = 2 }) { Text("Продолжить") }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = { step = 0 },
+                    ) { Text("Назад") }
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = { step = 2 },
+                    ) { Text("Продолжить") }
                 }
             }
 
@@ -1573,14 +2090,14 @@ private fun ColumnScope.DetailsScreen(
                 it.device_kind.contains("ГВС", ignoreCase = true)
             }
             item {
-                DetailsGroupTitle("Приборы на адресе")
+                DetailsGroupTitle("Приборы на адресе", compact = true)
             }
             item {
                 CollapsibleSection(
                     title = "Холодная вода",
-                    headerColor = Color(0xFFD8F1FF),
+                    headerColor = CubusBlockColor,
                     initiallyExpanded = false,
-                    centerTitle = true,
+                    compactHeader = true,
                 ) {
                     if (coldWaterMeters.isEmpty()) Text("ИПУ ХВС не найдены")
                     coldWaterMeters.forEach { WaterMeterCard(it) }
@@ -1589,22 +2106,22 @@ private fun ColumnScope.DetailsScreen(
             item {
                 CollapsibleSection(
                     title = "Горячая вода",
-                    headerColor = Color(0xFFFFE1E7),
+                    headerColor = CubusBlockColor,
                     initiallyExpanded = false,
-                    centerTitle = true,
+                    compactHeader = true,
                 ) {
                     if (hotWaterMeters.isEmpty()) Text("ИПУ ГВС не найдены")
                     hotWaterMeters.forEach { WaterMeterCard(it) }
                 }
             }
             item {
-                DetailsGroupTitle("Фото документов")
+                DetailsGroupTitle("Фото документов", compact = true)
             }
             item {
                 CollapsibleSection(
                     "Фотографии",
                     initiallyExpanded = false,
-                    centerTitle = true,
+                    compactHeader = true,
                 ) {
                     PhotoSection(
                         photos = details.photos,
@@ -1623,13 +2140,13 @@ private fun ColumnScope.DetailsScreen(
                 }
             }
             item {
-                DetailsGroupTitle("Номенклатура")
+                DetailsGroupTitle("Номенклатура", compact = true)
             }
             item {
                 CollapsibleSection(
                     "Номенклатура",
                     initiallyExpanded = false,
-                    centerTitle = true,
+                    compactHeader = true,
                 ) {
                     when {
                         nomenclatureLoading -> Text("Загрузка номенклатуры…")
@@ -1698,36 +2215,69 @@ private fun CollapsibleSection(
     title: String,
     headerColor: Color = Color.Transparent,
     initiallyExpanded: Boolean = true,
-    actionLabel: String? = null,
-    onAction: (() -> Unit)? = null,
-    centerTitle: Boolean = false,
+    compactHeader: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded) }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(headerColor, RoundedCornerShape(8.dp))
-                .clickable { expanded = !expanded }
-                .padding(vertical = 6.dp),
-        ) {
-            AppHeading(title, Modifier.align(Alignment.Center))
-            if (actionLabel != null && onAction != null) {
-                TextButton(onClick = onAction, modifier = Modifier.align(Alignment.CenterStart)) {
-                    Text(actionLabel)
+        if (compactHeader) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(headerColor, RoundedCornerShape(8.dp))
+                            .clickable { expanded = !expanded }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Spacer(Modifier.width(64.dp))
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Button(onClick = { expanded = !expanded }) {
+                            Text(if (expanded) "▲" else "▼")
+                        }
+                    }
+                    if (expanded) {
+                        HorizontalDivider()
+                        Column(
+                            Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) { content() }
+                    }
                 }
             }
-            Button(onClick = { expanded = !expanded }, modifier = Modifier.align(Alignment.CenterEnd)) {
-                Text(if (expanded) "▲" else "▼")
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(headerColor, RoundedCornerShape(8.dp))
+                    .clickable { expanded = !expanded }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Spacer(Modifier.width(72.dp))
+                Text(
+                    title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "▲" else "▼")
+                }
             }
-        }
-        if (expanded) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(
-                    Modifier.fillMaxWidth().padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) { content() }
+            if (expanded) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) { content() }
+                }
             }
         }
     }
@@ -1744,7 +2294,15 @@ private fun AppHeading(title: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun DetailsGroupTitle(title: String) = AppHeading(title)
+private fun DetailsGroupTitle(title: String, compact: Boolean = false) {
+    Text(
+        title,
+        style = if (compact) MaterialTheme.typography.titleMedium
+            else MaterialTheme.typography.headlineSmall,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+    )
+}
 
 private val photoTypes = listOf(
     "f1730" to "Акт поверки",
@@ -1771,20 +2329,30 @@ private fun PhotoSection(
     var preview by remember { mutableStateOf<ApplicationPhoto?>(null) }
     var pendingPreview by remember { mutableStateOf<ApplicationPhoto?>(null) }
     var deleteCandidate by remember { mutableStateOf<ApplicationPhoto?>(null) }
-    Box {
-        Button(onClick = { typeMenu = true }) {
-            Text(photoTypes.firstOrNull { it.first == selectedField }?.second ?: "Тип фотографии")
-        }
-        DropdownMenu(expanded = typeMenu, onDismissRequest = { typeMenu = false }) {
-            photoTypes.forEach { (field, title) ->
-                DropdownMenuItem(
-                    text = { Text(title) },
-                    onClick = { typeMenu = false; onFieldSelected(field) },
-                )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.weight(1f)) {
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { typeMenu = true },
+            ) {
+                Text(photoTypes.firstOrNull { it.first == selectedField }?.second ?: "Тип документа")
+            }
+            DropdownMenu(expanded = typeMenu, onDismissRequest = { typeMenu = false }) {
+                photoTypes.forEach { (field, title) ->
+                    DropdownMenuItem(
+                        text = { Text(title) },
+                        onClick = { typeMenu = false; onFieldSelected(field) },
+                    )
+                }
             }
         }
+        Button(modifier = Modifier.weight(1f), onClick = onAdd) {
+            Text("Добавить фотографию")
+        }
     }
-    Button(onClick = onAdd) { Text("Добавить фотографию") }
     val pendingKey = pendingPreview?.let { "${it.field}\u0000${it.filename}" }
     if (pendingPreview != null && loadingKey == pendingKey) Text("Загрузка фотографии…")
     if (loadError != null) Text(loadError, color = MaterialTheme.colorScheme.error)

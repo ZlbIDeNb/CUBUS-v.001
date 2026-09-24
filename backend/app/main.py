@@ -25,6 +25,7 @@ from .models import (
     ScheduleDay,
     TokenResponse,
     UploadPhotoRequest,
+    WarehouseItem,
     WaterMeter,
 )
 
@@ -113,6 +114,17 @@ async def material_usage(
 ):
     try:
         return await crm.material_usage(user["sub"], work_date)
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/metrolog-warehouse", response_model=list[WarehouseItem])
+async def metrolog_warehouse(
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.metrolog_warehouse(user["sub"])
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

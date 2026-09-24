@@ -5,7 +5,37 @@ from datetime import date
 import httpx
 
 from app.client_base import APPLICATION_STATUSES, ClientBaseClient, ClientBaseError
-from app.models import AddMeterRequest, AddNomenclatureRequest
+from app.models import AddMeterRequest, AddNomenclatureRequest, ApplicationSummary
+
+
+def test_application_details_reuses_second_phone_from_summary():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "address_id": "f11430", "floor": "f11270", "entrance": "f11280",
+            "entrance_code": "f11710", "metrolog_comments": "f17940",
+        }
+
+        async def fake_request(_method, _path, **_kwargs):
+            return {"data": {"id": "40006", "attributes": {"f11430": "17"}}}
+
+        async def fake_summary(_item):
+            return ApplicationSummary(
+                id=40006, number="39967", status="Новая", phone_number="1",
+                phone_number_2="2",
+            )
+
+        async def empty(*_args, **_kwargs):
+            return []
+
+        client._request = fake_request
+        client._summary = fake_summary
+        client._water_meters_by_address = empty
+        client._application_photos = empty
+        result = await client.get_application(40006)
+        assert result.phone_number_2 == "2"
+
+    asyncio.run(run_test())
 
 
 def test_rework_reasons_are_read_from_field_metadata():
@@ -112,6 +142,65 @@ def test_application_status_counts_keeps_defined_order_and_zeroes():
 
         assert [item.status for item in result] == list(APPLICATION_STATUSES)
         assert [item.count for item in result] == [2, 1, 0]
+
+    asyncio.run(run_test())
+
+
+def test_metrolog_warehouse_uses_authenticated_clientbase_user():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "warehouse_user": "f13030",
+            "warehouse_name": "f13040",
+            "warehouse_incoming": "f13050",
+            "warehouse_outgoing": "f13060",
+            "warehouse_balance": "f13070",
+            "warehouse_written_off": "f13831",
+            "warehouse_defect_quantity": "f13771",
+            "warehouse_defect_position": "f13781",
+            "warehouse_writeoff_goods": "f13821",
+            "warehouse_service_writeoff": "f15811",
+            "warehouse_total_written_off": "f15821",
+        }
+
+        async def fake_user_id(login):
+            assert login == "metrolog.login"
+            return 460
+
+        async def fake_list_all(path, **kwargs):
+            assert path == "data760"
+            assert kwargs["filter_expression"] == (
+                "and(eq(status,0),eq(f13030,460))"
+            )
+            return [{
+                "id": "15",
+                "attributes": {
+                    "f13040": "91",
+                    "f13050": "10",
+                    "f13060": "3",
+                    "f13070": "7",
+                    "f13831": "1",
+                    "f13771": "2",
+                    "f13781": "0",
+                    "f13821": "4",
+                    "f15811": "1",
+                    "f15821": "5",
+                },
+            }]
+
+        async def fake_price_name(value):
+            assert value == "91"
+            return "Счётчик ЭКО НОМ"
+
+        client._user_id = fake_user_id
+        client._list_all = fake_list_all
+        client._price_list_name = fake_price_name
+
+        result = await client.metrolog_warehouse("metrolog.login")
+        assert len(result) == 1
+        assert result[0].name == "Счётчик ЭКО НОМ"
+        assert result[0].balance == "7"
+        assert result[0].total_written_off == "5"
 
     asyncio.run(run_test())
 
@@ -450,6 +539,105 @@ def test_add_nomenclature_uses_application_and_price_list_relations():
     asyncio.run(run_test())
 
 
+def test_price_list_contains_only_bot_services_and_warehouse_materials():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "price_list_name": "f1158",
+            "price_list_price": "f1169",
+            "price_list_category": "f1157",
+            "price_list_warehouse": "f13291",
+            "price_list_bot_enabled": "f13980",
+            "price_list_type": "f2900",
+        }
+
+        async def fake_list_all(path, filter_expression=None):
+            assert path == "data91"
+            return [
+                {"id": "1", "attributes": {
+                    "f1158": "Поверка", "f1169": "1000", "f1157": "Услуга",
+                    "f13291": "Нет", "f13980": "Да",
+                }},
+                {"id": "2", "attributes": {
+                    "f1158": "Счётчик", "f1169": "2200", "f1157": "Товар",
+                    "f13291": "Да", "f13980": "Да",
+                }},
+                {"id": "3", "attributes": {
+                    "f1158": "Скрытая услуга", "f1169": "500", "f1157": "Услуга",
+                    "f13291": "Нет", "f13980": "Нет",
+                }},
+                {"id": "4", "attributes": {
+                    "f1158": "Товар не со склада", "f1169": "100", "f1157": "Товар",
+                    "f13291": "Нет", "f13980": "Да",
+                }},
+            ]
+
+        client._list_all = fake_list_all
+        result = await client.price_list()
+
+        assert [(item.name, item.item_kind) for item in result] == [
+            ("Поверка", "service"),
+            ("Счётчик", "material"),
+        ]
+
+    asyncio.run(run_test())
+
+
+def test_price_list_uses_readable_type_when_category_is_relation_id():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "price_list_name": "f1158",
+            "price_list_price": "f1169",
+            "price_list_category": "f1157",
+            "price_list_warehouse": "f13291",
+            "price_list_bot_enabled": "f13980",
+            "price_list_type": "f2900",
+        }
+
+        async def fake_list_all(path, filter_expression=None):
+            return [
+                {"id": "1", "attributes": {
+                    "f1158": "Поверка", "f1169": "1000", "f1157": "17",
+                    "f2900": "Услуга", "f13291": {"value": "Нет"},
+                    "f13980": {"value": "Да"},
+                }},
+                {"id": "2", "attributes": {
+                    "f1158": "Счётчик", "f1169": "2200", "f1157": "18",
+                    "f2900": "Товар", "f13291": {"value": True},
+                    "f13980": {"value": True},
+                }},
+            ]
+
+        client._list_all = fake_list_all
+        result = await client.price_list()
+
+        assert [(item.name, item.item_kind) for item in result] == [
+            ("Поверка", "service"),
+            ("Счётчик", "material"),
+        ]
+
+    asyncio.run(run_test())
+
+
+def test_reference_catalog_is_persisted_in_local_sqlite(tmp_path):
+    cache_path = tmp_path / "catalogs.sqlite3"
+    writer = object.__new__(ClientBaseClient)
+    writer.cache_path = cache_path
+    writer._cache_set(
+        "catalog:price-list:v4",
+        [{"id": 1, "name": "Поверка", "price": "1000", "item_kind": "service"}],
+        3600,
+    )
+
+    reader = object.__new__(ClientBaseClient)
+    reader.cache_path = cache_path
+
+    assert reader._cache_get("catalog:price-list:v4") == [
+        {"id": 1, "name": "Поверка", "price": "1000", "item_kind": "service"}
+    ]
+
+
 def test_add_meter_links_address_client_and_application():
     async def run_test():
         client = object.__new__(ClientBaseClient)
@@ -465,12 +653,18 @@ def test_add_meter_links_address_client_and_application():
             "meter_device_photo": "f17860", "meter_passport_photo": "f18021",
         }
         created = {}
+        attached_files = {}
 
         async def fake_request(method, path, **kwargs):
             if path == "data130/39801":
                 return {"data": {"attributes": {"f11180": "55", "f11360": "66"}}}
-            created.update(kwargs["json"]["data"]["attributes"])
-            return {"data": {"id": "900"}}
+            if method == "POST" and path == "data610":
+                created.update(kwargs["json"]["data"]["attributes"])
+                return {"data": {"id": "900"}}
+            if method == "PATCH" and path == "data610/900":
+                attached_files.update(kwargs["json"]["data"]["attributes"])
+                return {"data": {"id": "900"}}
+            raise AssertionError((method, path))
 
         client._request = fake_request
         await client.add_meter(
@@ -491,7 +685,8 @@ def test_add_meter_links_address_client_and_application():
         assert created["f10540"] == "ИПУ ХВС"
         assert created["f12740"] == "Годен"
         assert created["f17640"] == "Да"
-        assert created["f17860"][0]["file_name"] == "meter.jpg"
+        assert "f17860" not in created
+        assert attached_files["f17860"][0]["file_name"] == "meter.jpg"
 
     asyncio.run(run_test())
 
@@ -521,7 +716,34 @@ def test_unfit_meter_with_replacement_sets_required_clientbase_values():
     assert attrs["status"] == "Не Годен"
     assert attrs["replacement"] == "Нет"
     assert attrs["last"] == "2026-09-24 00:00:00"
-    assert attrs["next"] == ""
+    assert "next" not in attrs
+
+
+def test_new_meter_omits_empty_last_verification_date():
+    client = object.__new__(ClientBaseClient)
+    client.fields = {
+        "address_id": "address", "client_id": "client",
+        "meter_address_id": "meter_address", "meter_client_id": "meter_client",
+        "meter_application_id": "application", "meter_device_kind": "kind",
+        "meter_type": "type", "meter_serial_number": "serial",
+        "meter_registry_number": "registry", "meter_year": "year",
+        "meter_last_check": "last", "meter_next_check": "next",
+        "meter_status": "status", "meter_replacement": "replacement",
+        "meter_device_photo": "photo", "meter_passport_photo": "passport",
+    }
+
+    attrs = client._meter_attributes(
+        {"address": "1", "client": "2"},
+        3,
+        AddMeterRequest(
+            device_kind="ИПУ ХВС",
+            ipu_status="Новый",
+            next_check="2030-09-23",
+        ),
+    )
+
+    assert "last" not in attrs
+    assert attrs["next"] == "2030-09-23 00:00:00"
 
 
 def test_meter_catalog_loads_sorted_dictionary_and_searches_both_values():

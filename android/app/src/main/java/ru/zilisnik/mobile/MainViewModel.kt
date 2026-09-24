@@ -23,6 +23,7 @@ import ru.zilisnik.mobile.data.UserProfile
 import ru.zilisnik.mobile.data.ScheduleDay
 import ru.zilisnik.mobile.data.UploadPhotoRequest
 import ru.zilisnik.mobile.data.WaterMeter
+import ru.zilisnik.mobile.data.WarehouseItem
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -36,6 +37,9 @@ data class UiState(
     val todayStatusCounts: List<ApplicationStatusCount> = emptyList(),
     val todayApplications: List<ApplicationSummary> = emptyList(),
     val materialUsage: List<MaterialUsageItem> = emptyList(),
+    val warehouseItems: List<WarehouseItem> = emptyList(),
+    val warehouseLoading: Boolean = false,
+    val warehouseError: String? = null,
     val scheduleDays: List<ScheduleDay> = emptyList(),
     val scheduleMonthOffset: Int = 0,
     val applicationDayOffset: Int = 0,
@@ -50,6 +54,7 @@ data class UiState(
     val priceList: List<PriceListItem> = emptyList(),
     val meterCatalog: List<MeterCatalogItem> = emptyList(),
     val meterCatalogError: String? = null,
+    val serviceRefreshing: String? = null,
     val reworkApplicationId: Long? = null,
     val reworkReasons: List<String> = emptyList(),
     val reworkError: String? = null,
@@ -108,12 +113,17 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
                         .onFailure { warnings += "список заявок временно недоступен" }
                 }
                 val pricesJob = async {
-                    runCatching { repository.priceList(refresh = true) }
+                    runCatching { repository.priceList() }
                         .onFailure { warnings += "прайс-лист временно недоступен" }
                         .getOrDefault(emptyList())
                 }
                 val catalogJob = async {
-                    runCatching { repository.meterCatalog("", refresh = true) }
+                    runCatching { repository.meterCatalog("") }
+                }
+                val warehouseJob = async {
+                    runCatching { repository.metrologWarehouse() }
+                        .onFailure { warnings += "склад метролога временно недоступен" }
+                        .getOrDefault(emptyList())
                 }
 
                 scheduleJob.await()
@@ -121,10 +131,12 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
                 applicationsJob.await()
                 val prices = pricesJob.await()
                 val catalogResult = catalogJob.await()
+                val warehouse = warehouseJob.await()
                 _state.value = _state.value.copy(
                     priceList = prices,
                     meterCatalog = catalogResult.getOrDefault(emptyList()),
                     meterCatalogError = catalogResult.exceptionOrNull()?.message,
+                    warehouseItems = warehouse,
                     message = warnings.takeIf { it.isNotEmpty() }
                         ?.joinToString(prefix = "Вход выполнен, но ", separator = ", "),
                 )
@@ -147,38 +159,49 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
     fun startCompletion(id: Long) = run {
         val snapshot = _state.value
         val current = snapshot.selected?.takeIf { it.id == id }
-        val (details, nomenclature) = coroutineScope {
-            val detailsJob = async { current ?: repository.application(id) }
-            val nomenclatureJob = async {
-                if (current != null && !snapshot.nomenclatureLoading &&
-                    snapshot.nomenclatureError == null
-                ) current.nomenclature else repository.nomenclature(id)
-            }
-            detailsJob.await() to nomenclatureJob.await()
-        }
-        var catalogError = _state.value.meterCatalogError
-        val catalog = if (_state.value.meterCatalog.isNotEmpty()) {
-            _state.value.meterCatalog
-        } else try {
-            repository.meterCatalog("")
-        } catch (error: Exception) {
-            catalogError = error.message ?: "Не удалось загрузить справочник ИПУ"
-            emptyList()
-        }
-        val prices = if (_state.value.priceList.isNotEmpty()) {
-            _state.value.priceList
-        } else repository.priceList()
+        val details = current ?: repository.application(id)
+        val nomenclatureReady = current != null &&
+            !snapshot.nomenclatureLoading && snapshot.nomenclatureError == null
+        val nomenclatureAlreadyLoading = current != null && snapshot.nomenclatureLoading
         _state.value = _state.value.copy(
-            selected = details.copy(nomenclature = nomenclature),
+            selected = details.copy(
+                nomenclature = current?.nomenclature.orEmpty(),
+            ),
             completionWizard = true,
-            priceList = prices,
-            nomenclatureLoading = false,
+            nomenclatureLoading = !nomenclatureReady,
             nomenclatureError = null,
             photoLoadingKey = null,
             photoLoadError = null,
-            meterCatalog = catalog,
-            meterCatalogError = catalogError,
         )
+        if (!nomenclatureReady && !nomenclatureAlreadyLoading) loadNomenclature(id)
+        loadCompletionReferences()
+    }
+
+    private fun loadCompletionReferences() {
+        if (_state.value.priceList.isEmpty()) {
+            viewModelScope.launch {
+                runCatching { repository.priceList() }.onSuccess { prices ->
+                    _state.value = _state.value.copy(priceList = prices)
+                }
+            }
+        }
+        if (_state.value.meterCatalog.isEmpty()) {
+            viewModelScope.launch {
+                runCatching { repository.meterCatalog("") }
+                    .onSuccess { catalog ->
+                        _state.value = _state.value.copy(
+                            meterCatalog = catalog,
+                            meterCatalogError = null,
+                        )
+                    }
+                    .onFailure { error ->
+                        _state.value = _state.value.copy(
+                            meterCatalogError = error.message
+                                ?: "Не удалось загрузить справочник ИПУ",
+                        )
+                    }
+            }
+        }
     }
 
     private fun loadNomenclature(id: Long) {
@@ -215,6 +238,83 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
     fun refreshSchedule() = run {
         loadScheduleInternal(_state.value.scheduleMonthOffset, refresh = true)
         _state.value = _state.value.copy(message = "График работы обновлён")
+    }
+
+    fun refreshReferenceCatalogs() {
+        if (_state.value.serviceRefreshing != null) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                serviceRefreshing = "catalogs",
+                message = null,
+            )
+            try {
+                val catalog = repository.meterCatalog("", refresh = true)
+                _state.value = _state.value.copy(
+                    meterCatalog = catalog,
+                    meterCatalogError = null,
+                    serviceRefreshing = null,
+                    message = "Справочник ИПУ обновлён и сохранён: ${catalog.size} записей",
+                )
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    serviceRefreshing = null,
+                    message = error.message ?: "Не удалось обновить справочники",
+                )
+            }
+        }
+    }
+
+    fun loadWarehouse() {
+        if (_state.value.warehouseLoading) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                warehouseLoading = true,
+                warehouseError = null,
+            )
+            try {
+                val items = repository.metrologWarehouse()
+                _state.value = _state.value.copy(
+                    warehouseItems = items,
+                    warehouseLoading = false,
+                    warehouseError = null,
+                )
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    warehouseLoading = false,
+                    warehouseError = error.message ?: "Не удалось загрузить склад метролога",
+                )
+            }
+        }
+    }
+
+    fun loadPriceList() {
+        updatePriceList(
+            loadingKey = "price-list",
+            successTitle = "Прайс-лист загружен и сохранён",
+        )
+    }
+
+    private fun updatePriceList(loadingKey: String, successTitle: String) {
+        if (_state.value.serviceRefreshing != null) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                serviceRefreshing = loadingKey,
+                message = null,
+            )
+            try {
+                val prices = repository.priceList(refresh = true)
+                _state.value = _state.value.copy(
+                    priceList = prices,
+                    serviceRefreshing = null,
+                    message = "$successTitle: ${prices.size} позиций",
+                )
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    serviceRefreshing = null,
+                    message = error.message ?: "Не удалось обновить номенклатуру",
+                )
+            }
+        }
     }
 
     fun back() {
@@ -408,6 +508,10 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
             reworkReasons = emptyList(),
             reworkError = null,
         )
+    }
+
+    fun clearMessage() {
+        _state.value = _state.value.copy(message = null)
     }
 
     fun sendToRework(id: Long, reason: String, comment: String) = run {

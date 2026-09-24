@@ -48,6 +48,9 @@ class Repository {
     suspend fun materialUsage(workDate: String): List<MaterialUsageItem> =
         api.materialUsage(auth(), workDate)
 
+    suspend fun metrologWarehouse(): List<WarehouseItem> =
+        api.metrologWarehouse(auth())
+
     suspend fun applications(status: String, workDate: String): List<ApplicationSummary> =
         api.applications(auth(), status, workDate)
 

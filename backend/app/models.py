@@ -58,6 +58,20 @@ class MaterialUsageItem(BaseModel):
     total: str = ""
 
 
+class WarehouseItem(BaseModel):
+    id: int
+    name: str = ""
+    incoming: str = ""
+    outgoing: str = ""
+    balance: str = ""
+    written_off_to_warehouse: str = ""
+    defect_quantity: str = ""
+    defect_position: str = ""
+    writeoff_goods_quantity: str = ""
+    service_writeoff_quantity: str = ""
+    total_written_off: str = ""
+
+
 class EmployeeEquipment(BaseModel):
     category: str
     name: str = ""
@@ -122,6 +136,7 @@ class PriceListItem(BaseModel):
     id: int
     name: str = ""
     price: str = ""
+    item_kind: str = ""
 
 
 class MeterCatalogItem(BaseModel):

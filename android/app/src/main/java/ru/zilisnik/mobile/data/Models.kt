@@ -62,6 +62,20 @@ data class MaterialUsageItem(
     val total: String,
 )
 
+data class WarehouseItem(
+    val id: Long,
+    val name: String,
+    val incoming: String,
+    val outgoing: String,
+    val balance: String,
+    val written_off_to_warehouse: String,
+    val defect_quantity: String,
+    val defect_position: String,
+    val writeoff_goods_quantity: String,
+    val service_writeoff_quantity: String,
+    val total_written_off: String,
+)
+
 data class WaterMeter(
     val id: Long,
     val device_kind: String,
@@ -101,6 +115,7 @@ data class PriceListItem(
     val id: Long,
     val name: String,
     val price: String,
+    val item_kind: String = "",
 )
 
 data class MeterCatalogItem(

@@ -2,10 +2,9 @@
 <resources>
     <style name="Theme.Zilisnik" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#175C4C</item>
-        <item name="android:navigationBarColor">#F5F7F6</item>
-        <item name="android:statusBarColor">#F5F7F6</item>
+        <item name="android:colorAccent">#2B5A78</item>
+        <item name="android:navigationBarColor">#F7FAFC</item>
+        <item name="android:statusBarColor">#F7FAFC</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>
-

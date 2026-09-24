@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import calendar
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
 import logging
@@ -29,6 +29,7 @@ from .models import (
     MaterialUsageItem,
     PriceListItem,
     ScheduleDay,
+    WarehouseItem,
     WaterMeter,
 )
 
@@ -49,6 +50,22 @@ APPLICATION_STATUSES = (
     "Выполнено",
     "На Доработку",
 )
+
+REWORK_REASON_FALLBACK = [
+    "Не дозвон",
+    "Не открыли дверь",
+    "Не наша методика",
+    "Нет денег",
+    "Закажет позже",
+    "Отказ от всего",
+    "Нет горячей воды",
+    "Течет кран",
+    "Не подошел срок поверки",
+    "Нет воды",
+]
+
+# Reference catalogs are persisted in SQLite and refreshed only on explicit request.
+REFERENCE_CACHE_TTL_SECONDS = 10 * 365 * 24 * 60 * 60
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -129,12 +146,32 @@ class ClientBaseClient:
             response.raise_for_status()
             return response.json() if response.content else {}
         except httpx.HTTPStatusError as exc:
+            detail = self._upstream_error_detail(exc.response)
             raise ClientBaseError(
-                f"Client Base вернул HTTP {exc.response.status_code}",
+                f"Client Base вернул HTTP {exc.response.status_code}"
+                + (f": {detail}" if detail else ""),
                 status_code=exc.response.status_code,
             ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise ClientBaseError("Client Base не подтвердил операцию") from exc
+
+    @staticmethod
+    def _upstream_error_detail(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.error(
+                "Client Base HTTP %s response: %s",
+                response.status_code,
+                response.text[:1000],
+            )
+            return ""
+        if isinstance(payload, dict):
+            for key in ("detail", "message", "error", "errors"):
+                value = payload.get(key)
+                if value:
+                    return str(value)[:500]
+        return str(payload)[:500]
 
     async def list_applications(
         self,
@@ -225,6 +262,113 @@ class ClientBaseClient:
         if not rows:
             return None
         return rows[0]
+
+    async def _user_id(self, crm_login: str) -> int | None:
+        safe_login = crm_login.replace("'", "\\'")
+        payload = await self._request(
+            "GET",
+            "user",
+            params={
+                "filter": f"and(eq(arc,0),eq(login,'{safe_login}'))",
+                "page[limit]": 1,
+                "page[offset]": 0,
+            },
+        )
+        rows = payload.get("data", []) or []
+        if not rows:
+            return None
+        try:
+            return int(rows[0]["id"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    async def metrolog_warehouse(self, crm_login: str) -> list[WarehouseItem]:
+        try:
+            user_id = await self._user_id(crm_login)
+        except ClientBaseError:
+            user_id = None
+        rows: list[dict] = []
+        if user_id is not None:
+            rows = await self._list_all(
+                "data760",
+                filter_expression=(
+                    f"and(eq(status,0),"
+                    f"eq({self.fields['warehouse_user']},{user_id}))"
+                ),
+            )
+        # Older ClientBase configurations may not grant API access to /user.
+        # In that case the relation field f13020 provides the same metrolog link.
+        if not rows:
+            employee = await self._employee_row(crm_login)
+            if employee is None:
+                return []
+            employee_ids = {
+                str(employee.get("id", "") or ""),
+                str(
+                    (employee.get("attributes", {}) or {}).get(
+                        self.fields["employee_id"], ""
+                    )
+                    or ""
+                ),
+            } - {""}
+            if not employee_ids:
+                return []
+            relation_conditions = ",".join(
+                f"eq({self.fields['warehouse_employee']},{employee_id})"
+                for employee_id in sorted(employee_ids)
+            )
+            relation_filter = (
+                relation_conditions
+                if len(employee_ids) == 1
+                else f"or({relation_conditions})"
+            )
+            rows = await self._list_all(
+                "data760",
+                filter_expression=f"and(eq(status,0),{relation_filter})",
+            )
+        raw_names = [
+            str(
+                (row.get("attributes", {}) or {}).get(
+                    self.fields["warehouse_name"], ""
+                )
+                or ""
+            )
+            for row in rows
+        ]
+        resolved_names = await asyncio.gather(
+            *(self._price_list_name(name) for name in raw_names)
+        )
+        result: list[WarehouseItem] = []
+        for row, resolved_name, raw_name in zip(rows, resolved_names, raw_names):
+            attrs = row.get("attributes", {}) or {}
+            result.append(
+                WarehouseItem(
+                    id=int(row["id"]),
+                    name=resolved_name or raw_name,
+                    incoming=str(attrs.get(self.fields["warehouse_incoming"], "") or ""),
+                    outgoing=str(attrs.get(self.fields["warehouse_outgoing"], "") or ""),
+                    balance=str(attrs.get(self.fields["warehouse_balance"], "") or ""),
+                    written_off_to_warehouse=str(
+                        attrs.get(self.fields["warehouse_written_off"], "") or ""
+                    ),
+                    defect_quantity=str(
+                        attrs.get(self.fields["warehouse_defect_quantity"], "") or ""
+                    ),
+                    defect_position=str(
+                        attrs.get(self.fields["warehouse_defect_position"], "") or ""
+                    ),
+                    writeoff_goods_quantity=str(
+                        attrs.get(self.fields["warehouse_writeoff_goods"], "") or ""
+                    ),
+                    service_writeoff_quantity=str(
+                        attrs.get(self.fields["warehouse_service_writeoff"], "") or ""
+                    ),
+                    total_written_off=str(
+                        attrs.get(self.fields["warehouse_total_written_off"], "") or ""
+                    ),
+                )
+            )
+        return sorted(result, key=lambda item: item.name.casefold())
 
     async def employee_profile(
         self, crm_login: str, role: str, device_name: str
@@ -517,9 +661,6 @@ class ClientBaseClient:
         address_id = attrs.get(self.fields["address_id"])
         return ApplicationDetails(
             **summary.model_dump(),
-            phone_number_2=str(
-                attrs.get(self.fields["phone_number_2"], "") or ""
-            ),
             floor=str(attrs.get(self.fields["floor"], "") or ""),
             entrance=str(attrs.get(self.fields["entrance"], "") or ""),
             entrance_code=str(attrs.get(self.fields["entrance_code"], "") or ""),
@@ -535,31 +676,80 @@ class ClientBaseClient:
         return await self._nomenclature(application_id)
 
     async def price_list(self, force_refresh: bool = False) -> list[PriceListItem]:
-        cache_key = "catalog:price-list"
+        cache_key = "catalog:price-list:v4"
         cached = None if force_refresh else self._cache_get(cache_key)
         if cached is not None:
             return [PriceListItem(**item) for item in cached]
-        rows = await self._list_all("data91", filter_expression="eq(status,0)")
-        result = [
-            PriceListItem(
-                id=int(row["id"]),
-                name=str(
-                    (row.get("attributes", {}) or {}).get(
-                        self.fields["price_list_name"], ""
-                    )
-                    or ""
-                ),
-                price=str(
-                    (row.get("attributes", {}) or {}).get(
-                        self.fields["price_list_price"], ""
-                    )
-                    or ""
-                ),
+        rows = await self._list_all("data91")
+        result: list[PriceListItem] = []
+        for row in rows:
+            attrs = row.get("attributes", {}) or {}
+            category = self._catalog_filter_text(
+                attrs.get(self.fields["price_list_category"], "")
             )
-            for row in rows
-        ]
-        self._cache_set(cache_key, [item.model_dump() for item in result], 21600)
+            legacy_type = self._catalog_filter_text(
+                attrs.get(self.fields.get("price_list_type", "f2900"), "")
+            )
+            if "услуг" not in category and "товар" not in category:
+                category = legacy_type
+            warehouse = self._catalog_filter_text(
+                attrs.get(self.fields["price_list_warehouse"], "")
+            )
+            bot_enabled = self._catalog_filter_text(
+                attrs.get(self.fields["price_list_bot_enabled"], "")
+            )
+            # f1157 is a relation and the API returns its internal record id.
+            # In this table the requested split is represented directly by f13291:
+            # no warehouse stock means a service, warehouse stock means a material.
+            category_is_service = "услуг" in category
+            category_is_material = "товар" in category
+            category_is_unknown = not category_is_service and not category_is_material
+            is_service = self._is_no(warehouse) and (
+                category_is_unknown or category_is_service
+            )
+            is_material = self._is_yes(warehouse) and (
+                category_is_unknown or category_is_material
+            )
+            if not self._is_yes(bot_enabled) or not (is_service or is_material):
+                continue
+            result.append(
+                PriceListItem(
+                    id=int(row["id"]),
+                    name=str(attrs.get(self.fields["price_list_name"], "") or ""),
+                    price=str(attrs.get(self.fields["price_list_price"], "") or ""),
+                    item_kind="service" if is_service else "material",
+                )
+            )
+        result.sort(key=lambda item: item.name.casefold())
+        logger.info(
+            "Price list table 91: rows=%s eligible=%s",
+            len(rows),
+            len(result),
+        )
+        self._cache_set(
+            cache_key,
+            [item.model_dump() for item in result],
+            REFERENCE_CACHE_TTL_SECONDS,
+        )
         return result
+
+    @staticmethod
+    def _catalog_filter_text(value: Any) -> str:
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False).casefold()
+        return str(value or "").strip().casefold()
+
+    @staticmethod
+    def _is_yes(value: str) -> bool:
+        return value in {"1", "true", "yes", "да"} or bool(
+            re.search(r"(?:^|\W)(?:да|true|yes|1)(?:$|\W)", value)
+        )
+
+    @staticmethod
+    def _is_no(value: str) -> bool:
+        return value in {"0", "false", "no", "нет"} or bool(
+            re.search(r"(?:^|\W)(?:нет|false|no|0)(?:$|\W)", value)
+        )
 
     async def add_nomenclature(
         self, application_id: int, command: AddNomenclatureRequest
@@ -617,7 +807,7 @@ class ClientBaseClient:
         rows = None if force_refresh else self._cache_get(cache_key)
         if rows is None:
             rows = await self._list_all("data940", filter_expression="eq(status,0)")
-            self._cache_set(cache_key, rows, 21600)
+            self._cache_set(cache_key, rows, REFERENCE_CACHE_TTL_SECONDS)
         result: list[MeterCatalogItem] = []
         for row in rows:
             attrs = row.get("attributes", {}) or {}
@@ -651,20 +841,161 @@ class ClientBaseClient:
         if not command.device_photo_filename or not command.device_photo_base64:
             raise ClientBaseError("Фото прибора обязательно")
         attrs = self._meter_attributes(application_attrs, application_id, command)
-        response = await self._request(
-            "POST",
-            "data610",
-            json={
-                "data": {
-                    "type": "data610",
-                    "attributes": attrs,
-                }
-            },
+        date_fields = {
+            field: attrs.pop(field)
+            for field in (
+                self.fields.get("meter_last_check"),
+                self.fields.get("meter_next_check"),
+                self.fields.get("meter_form_last_check"),
+                self.fields.get("meter_form_next_check"),
+            )
+            if field and field in attrs
+        }
+        all_date_fields = [
+            field
+            for field in (
+                self.fields.get("meter_last_check"),
+                self.fields.get("meter_next_check"),
+                self.fields.get("meter_form_last_check"),
+                self.fields.get("meter_form_next_check"),
+            )
+            if field
+        ]
+        temporary_date = next(
+            iter(date_fields.values()),
+            f"{date.today().isoformat()} 00:00:00",
         )
+        # ClientBase API 2.0 crashes while serializing a newly created row when
+        # one of its date fields is empty. Supply temporary valid dates for the
+        # POST, then clear the fields that must be empty for the selected status.
+        fields_to_clear = [field for field in all_date_fields if field not in date_fields]
+        for field in all_date_fields:
+            attrs[field] = date_fields.get(field, temporary_date)
+        file_fields = {
+            field: attrs.pop(field)
+            for field in (
+                self.fields.get("meter_device_photo"),
+                self.fields.get("meter_passport_photo"),
+            )
+            if field and field in attrs
+        }
+        try:
+            response = await self._request(
+                "POST",
+                "data610",
+                json={
+                    "data": {
+                        "type": "data610",
+                        "attributes": attrs,
+                    }
+                },
+            )
+        except ClientBaseError as exc:
+            raise ClientBaseError(
+                f"Не удалось создать основную запись ИПУ: {exc}",
+                exc.status_code,
+            ) from exc
         row_id = int((response.get("data", {}) or {}).get("id", 0) or 0)
         if row_id <= 0:
             raise ClientBaseError("ClientBase не вернул ID добавленного ИПУ")
+        try:
+            for field in fields_to_clear:
+                await self._clear_meter_date(row_id, field)
+            if file_fields:
+                await self._request(
+                    "PATCH",
+                    f"data610/{row_id}",
+                    json={
+                        "data": {
+                            "type": "data610",
+                            "id": str(row_id),
+                            "attributes": file_fields,
+                        }
+                    },
+                )
+        except ClientBaseError as exc:
+            try:
+                await self._request("DELETE", f"data610/{row_id}")
+            except ClientBaseError:
+                logger.exception(
+                    "Could not roll back meter %s after photo upload failure",
+                    row_id,
+                )
+            raise ClientBaseError(
+                f"ИПУ не сохранён, ошибка дополнительного поля: {exc}",
+                exc.status_code,
+            ) from exc
         return self._meter_from_values(row_id, command, device_kind)
+
+    async def _clear_meter_date(self, meter_id: int, field: str) -> None:
+        try:
+            await self._request(
+                "PATCH",
+                f"data610/{meter_id}",
+                json={
+                    "data": {
+                        "type": "data610",
+                        "id": str(meter_id),
+                        "attributes": {field: None},
+                    }
+                },
+            )
+        except ClientBaseError as exc:
+            # Some ClientBase revisions commit the empty date and then fail only
+            # while formatting that empty value for the response.
+            if "format() on bool" in str(exc):
+                logger.info(
+                    "ClientBase cleared date field %s on meter %s but failed to format the response",
+                    field,
+                    meter_id,
+                )
+                return
+            raise ClientBaseError(
+                f"не удалось очистить поле даты {field}: {exc}",
+                exc.status_code,
+            ) from exc
+
+    async def _patch_meter_date(self, meter_id: int, field: str, value: str) -> None:
+        candidates = self._client_base_date_candidates(value)
+        last_error: ClientBaseError | None = None
+        for candidate in candidates:
+            try:
+                await self._request(
+                    "PATCH",
+                    f"data610/{meter_id}",
+                    json={
+                        "data": {
+                            "type": "data610",
+                            "id": str(meter_id),
+                            "attributes": {field: candidate},
+                        }
+                    },
+                )
+                return
+            except ClientBaseError as exc:
+                last_error = exc
+                if "format() on bool" not in str(exc):
+                    break
+        raise ClientBaseError(
+            f"поле {field}, значение даты не принято КБ ({', '.join(candidates)}): {last_error}",
+            last_error.status_code if last_error else None,
+        )
+
+    @staticmethod
+    def _client_base_date_candidates(value: str) -> list[str]:
+        source = value.strip()
+        raw_date = source.split(" ", 1)[0]
+        try:
+            parsed = datetime.strptime(raw_date, "%Y-%m-%d")
+        except ValueError:
+            return [source]
+        candidates = [
+            parsed.strftime("%Y-%m-%d %H:%M:%S"),
+            parsed.strftime("%Y-%m-%d"),
+            parsed.strftime("%d.%m.%Y %H:%M:%S"),
+            parsed.strftime("%d.%m.%Y"),
+        ]
+        return list(dict.fromkeys(candidates))
 
     async def update_meter(
         self, application_id: int, meter_id: int, command: AddMeterRequest
@@ -707,8 +1038,8 @@ class ClientBaseClient:
         device_kind = "ИПУ ГВС" if "ГВС" in command.device_kind.upper() else "ИПУ ХВС"
 
         def crm_date(value: str) -> str:
-            clean = value.strip()
-            return f"{clean} 00:00:00" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", clean) else clean
+            clean = value.strip().split(" ", 1)[0]
+            return f"{clean} 00:00:00"
 
         status = command.ipu_status if command.ipu_status in {"Новый", "Годен", "Не Годен"} else "Годен"
         replacement = (
@@ -728,10 +1059,20 @@ class ClientBaseClient:
             self.fields["meter_serial_number"]: command.serial_number,
             self.fields["meter_registry_number"]: command.registry_number,
             self.fields["meter_year"]: command.year,
-            self.fields["meter_last_check"]: crm_date(last_check),
-            self.fields["meter_next_check"]: crm_date(next_check),
             self.fields["meter_status"]: status,
         }
+        if last_check.strip():
+            last_value = crm_date(last_check)
+            attrs[self.fields["meter_last_check"]] = last_value
+            form_last_field = self.fields.get("meter_form_last_check")
+            if form_last_field:
+                attrs[form_last_field] = last_value
+        if next_check.strip():
+            next_value = crm_date(next_check)
+            attrs[self.fields["meter_next_check"]] = next_value
+            form_next_field = self.fields.get("meter_form_next_check")
+            if form_next_field:
+                attrs[form_next_field] = next_value
         replacement_field = self.fields.get("meter_replacement")
         if replacement_field:
             attrs[replacement_field] = replacement
@@ -1129,12 +1470,16 @@ class ClientBaseClient:
         await self._request("PATCH", f"data130/{application_id}", json=body)
 
     async def rework_reasons(self) -> list[str]:
-        metadata = await self._request(
-            "GET", "table/130", params={"include": "fields"}
-        )
+        try:
+            metadata = await self._request(
+                "GET", "table/130", params={"include": "fields"}
+            )
+        except ClientBaseError:
+            return list(REWORK_REASON_FALLBACK)
         field_id = self.fields["rework_reason"]
         field_metadata = self._find_metadata_by_id(metadata, field_id)
-        return self._extract_choice_labels(field_metadata)
+        reasons = self._extract_choice_labels(field_metadata)
+        return reasons or list(REWORK_REASON_FALLBACK)
 
     async def send_to_rework(
         self, application_id: int, reason: str, comment: str
