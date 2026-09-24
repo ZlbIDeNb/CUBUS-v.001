@@ -4,6 +4,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val apiBaseUrl = providers.gradleProperty("API_BASE_URL")
+    .orElse("http://127.0.0.1:8000/")
+
 android {
     namespace = "ru.zilisnik.mobile"
     compileSdk = 35
@@ -14,7 +17,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-        buildConfigField("String", "API_BASE_URL", "\"https://test-api.example.invalid/\"")
+        buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
     }
 
     buildFeatures {
@@ -28,6 +31,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("../.android-user/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -40,7 +52,7 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
+    val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -57,4 +69,3 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
-

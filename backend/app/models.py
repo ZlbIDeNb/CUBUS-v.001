@@ -20,6 +20,7 @@ class RegisterRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    login: str
     role: str
 
 
@@ -33,13 +34,48 @@ class ApplicationSummary(BaseModel):
     status: str
 
 
+class ApplicationStatusCount(BaseModel):
+    status: str
+    count: int = Field(ge=0)
+
+
+class EmployeeProfile(BaseModel):
+    login: str
+    role: str
+    device_name: str
+    full_name: str = ""
+    position: str = ""
+    phone: str = ""
+    work_schedule: str = ""
+    max_applications: str = ""
+    folder_number: str = ""
+
+
+class WaterMeter(BaseModel):
+    id: int
+    device_kind: str = ""
+    meter_type: str = ""
+    modification: str = ""
+    accuracy_class: str = ""
+    serial_number: str = ""
+    registry_number: str = ""
+    year: str = ""
+    last_check: str = ""
+    next_check: str = ""
+    status: str = ""
+    reading: str = ""
+
+
 class ApplicationDetails(ApplicationSummary):
     phone_number: str = ""
+    phone_number_2: str = ""
     floor: str = ""
     entrance: str = ""
     entrance_code: str = ""
     barrier: str = ""
     comments: str = ""
+    metrolog_comments: str = ""
+    water_meters: list[WaterMeter] = Field(default_factory=list)
 
 
 class CloseApplicationRequest(BaseModel):
@@ -63,4 +99,3 @@ class OperationResult(BaseModel):
     success: bool
     application_id: int
     status: str
-

@@ -1,6 +1,6 @@
 package ru.zilisnik.mobile.data
 
-import com.squareup.okhttp.logging.HttpLoggingInterceptor
+import okhttp3.logging.HttpLoggingInterceptor
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -19,7 +19,12 @@ class Repository {
                 HttpLoggingInterceptor.Level.NONE
             }
         }
-        val client = OkHttpClient.Builder().addInterceptor(logging).build()
+        val client = OkHttpClient.Builder()
+            .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .addInterceptor(logging)
+            .build()
         api = Retrofit.Builder()
             .baseUrl(BuildConfig.API_BASE_URL)
             .client(client)
@@ -29,11 +34,17 @@ class Repository {
     }
 
     suspend fun register(code: String, deviceName: String) {
-        token = api.register(RegisterRequest(code.trim(), deviceName)).access_token
+        val response = api.register(RegisterRequest(code.trim(), deviceName))
+        token = response.access_token
     }
 
-    suspend fun applications(): List<ApplicationSummary> =
-        api.applications(auth())
+    suspend fun profile(): UserProfile = api.profile(auth())
+
+    suspend fun applications(status: String, workDate: String): List<ApplicationSummary> =
+        api.applications(auth(), status, workDate)
+
+    suspend fun applicationStatusCounts(workDate: String): List<ApplicationStatusCount> =
+        api.applicationStatusCounts(auth(), workDate)
 
     suspend fun application(id: Long): ApplicationDetails =
         api.application(auth(), id)
@@ -41,6 +52,8 @@ class Repository {
     suspend fun close(id: Long, request: CloseApplicationRequest): OperationResult =
         api.closeApplication(auth(), UUID.randomUUID().toString(), id, request)
 
+    suspend fun sendToRework(id: Long): OperationResult =
+        api.sendToRework(auth(), UUID.randomUUID().toString(), id)
+
     private fun auth(): String = "Bearer ${requireNotNull(token) { "Требуется вход" }}"
 }
-
