@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import calendar
 from datetime import date
+from decimal import Decimal, InvalidOperation
 import re
 from typing import Any
 
@@ -18,7 +20,10 @@ from .models import (
     EmployeeEquipment,
     EmployeeProfile,
     NomenclatureItem,
+    MeterCatalogItem,
+    MaterialUsageItem,
     PriceListItem,
+    ScheduleDay,
     WaterMeter,
 )
 
@@ -111,17 +116,19 @@ class ClientBaseClient:
                     f"lte({date_field},'{day} 23:59:59')",
                 ]
             )
-        payload = await self._request(
-            "GET",
+        application_rows = await self._list_all(
             "data130",
-            params={
-                "filter": f"and({','.join(conditions)})",
-                "page[limit]": 10,
-                "page[offset]": 0,
-            },
+            filter_expression=f"and({','.join(conditions)})",
         )
-        application_rows = payload.get("data", [])
-        return [await self._summary(item) for item in application_rows]
+        applications = [await self._summary(item) for item in application_rows]
+        return sorted(
+            applications,
+            key=lambda item: (
+                not bool(item.delivery_time.strip()),
+                item.delivery_time.strip(),
+                item.number,
+            ),
+        )
 
     async def application_status_counts(
         self, crm_login: str, work_date: date | None = None
@@ -196,6 +203,102 @@ class ClientBaseClient:
             ),
             equipment=self._employee_equipment(attrs),
         )
+
+    async def employee_schedule(
+        self, crm_login: str, year: int, month: int
+    ) -> list[ScheduleDay]:
+        row = await self._employee_row(crm_login)
+        attrs = row.get("attributes", {}) if row else {}
+        work_days = str(attrs.get(self.fields["employee_work_days"], "") or "")
+        schedule = str(
+            attrs.get(self.fields["employee_work_schedule"], "") or ""
+        )
+        control = str(
+            attrs.get(self.fields["employee_schedule_control"], "") or ""
+        )
+        source = f"{work_days} {schedule} {control}".casefold()
+        explicit_dates = {
+            date(int(y), int(m), int(d))
+            for y, m, d in re.findall(r"(\d{4})-(\d{2})-(\d{2})", source)
+        }
+        explicit_dates.update(
+            date(int(y), int(m), int(d))
+            for d, m, y in re.findall(r"(\d{2})\.(\d{2})\.(\d{4})", source)
+        )
+        weekday_names = {
+            0: ("понедельник", "пн"), 1: ("вторник", "вт"),
+            2: ("среда", "ср"), 3: ("четверг", "чт"),
+            4: ("пятница", "пт"), 5: ("суббота", "сб"),
+            6: ("воскресенье", "вс"),
+        }
+        selected_weekdays = {
+            weekday
+            for weekday, names in weekday_names.items()
+            if any(re.search(rf"\b{re.escape(name)}\b", source) for name in names)
+        }
+        _, last_day = calendar.monthrange(year, month)
+        result: list[ScheduleDay] = []
+        for day_number in range(1, last_day + 1):
+            current = date(year, month, day_number)
+            if explicit_dates:
+                working = current in explicit_dates
+            elif selected_weekdays:
+                working = current.weekday() in selected_weekdays
+            elif "2/2" in source or "2 через 2" in source:
+                working = ((current - date(2020, 1, 1)).days % 4) < 2
+            elif "6/1" in source:
+                working = current.weekday() < 6
+            else:
+                working = current.weekday() < 5
+            result.append(ScheduleDay(date=current, day=day_number, is_working=working))
+        return result
+
+    async def material_usage(
+        self, crm_login: str, work_date: date
+    ) -> list[MaterialUsageItem]:
+        applications = await self.list_applications(crm_login, work_date=work_date)
+        totals: dict[str, tuple[Decimal, Decimal]] = {}
+        price_cache: dict[int, tuple[str, str]] = {}
+        for application in applications:
+            relation_field = self.fields["nomenclature_application_id"]
+            rows = await self._list_all(
+                "data351",
+                filter_expression=(
+                    f"and(eq(status,0),eq({relation_field},{application.id}))"
+                ),
+            )
+            for row in rows:
+                attrs = row.get("attributes", {}) or {}
+                relation_value = attrs.get(self.fields["nomenclature_name"], "")
+                match = re.search(r"\d+", str(relation_value))
+                if not match:
+                    continue
+                price_id = int(match.group())
+                if price_id not in price_cache:
+                    price_row = await self._request("GET", f"data91/{price_id}")
+                    price_attrs = (price_row.get("data", {}) or {}).get("attributes", {}) or {}
+                    price_cache[price_id] = (
+                        str(price_attrs.get(self.fields["price_list_name"], "") or ""),
+                        str(price_attrs.get(self.fields["price_list_type"], "") or ""),
+                    )
+                name, item_type = price_cache[price_id]
+                if item_type.casefold() != "товар":
+                    continue
+                try:
+                    quantity = Decimal(
+                        str(attrs.get(self.fields["nomenclature_quantity"], "0") or "0").replace(",", ".")
+                    )
+                    total = Decimal(
+                        str(attrs.get(self.fields["nomenclature_total"], "0") or "0").replace(",", ".")
+                    )
+                except InvalidOperation:
+                    continue
+                old_quantity, old_total = totals.get(name, (Decimal("0"), Decimal("0")))
+                totals[name] = (old_quantity + quantity, old_total + total)
+        return [
+            MaterialUsageItem(name=name, quantity=str(quantity), total=str(total))
+            for name, (quantity, total) in sorted(totals.items(), key=lambda item: item[0].casefold())
+        ]
 
     def _employee_equipment(self, attrs: dict[str, Any]) -> list[EmployeeEquipment]:
         def value(key: str) -> str:
@@ -341,35 +444,158 @@ class ClientBaseClient:
             },
         )
 
-    async def add_meter(self, application_id: int, command: AddMeterRequest) -> None:
+    async def delete_nomenclature(
+        self, application_id: int, nomenclature_id: int
+    ) -> None:
+        row = await self._request("GET", f"data351/{nomenclature_id}")
+        attrs = (row.get("data", {}) or {}).get("attributes", {}) or {}
+        linked_application = str(
+            attrs.get(self.fields["nomenclature_application_id"], "") or ""
+        )
+        if linked_application != str(application_id):
+            raise ClientBaseError("Позиция не относится к этой заявке")
+        await self._request("DELETE", f"data351/{nomenclature_id}")
+
+    async def meter_catalog(self, query: str = "") -> list[MeterCatalogItem]:
+        normalized_query = query.strip().casefold()
+        registry_field = self.fields["meter_catalog_registry_number"]
+        designation_field = self.fields["meter_catalog_designation"]
+        rows = await self._list_all("data940", filter_expression="eq(status,0)")
+        result: list[MeterCatalogItem] = []
+        for row in rows:
+            attrs = row.get("attributes", {}) or {}
+            registry_number = str(attrs.get(registry_field, "") or "")
+            designation = str(attrs.get(designation_field, "") or "")
+            if normalized_query and normalized_query not in (
+                f"{registry_number} {designation}".casefold()
+            ):
+                continue
+            result.append(
+                MeterCatalogItem(
+                    id=int(row["id"]),
+                    registry_number=registry_number,
+                    designation=designation,
+                )
+            )
+        return sorted(
+            result,
+            key=lambda item: (item.designation.casefold(), item.registry_number.casefold()),
+        )
+
+    async def add_meter(
+        self, application_id: int, command: AddMeterRequest
+    ) -> WaterMeter:
         application = await self._request("GET", f"data130/{application_id}")
         application_attrs = (
             (application.get("data", {}) or {}).get("attributes", {}) or {}
         )
-        await self._request(
+        device_kind = "ИПУ ГВС" if "ГВС" in command.device_kind.upper() else "ИПУ ХВС"
+
+        if not command.device_photo_filename or not command.device_photo_base64:
+            raise ClientBaseError("Фото прибора обязательно")
+        attrs = self._meter_attributes(application_attrs, application_id, command)
+        response = await self._request(
             "POST",
             "data610",
             json={
                 "data": {
                     "type": "data610",
-                    "attributes": {
-                        self.fields["meter_address_id"]: application_attrs.get(
-                            self.fields["address_id"], ""
-                        ),
-                        self.fields["meter_client_id"]: application_attrs.get(
-                            self.fields["client_id"], ""
-                        ),
-                        self.fields["meter_application_id"]: str(application_id),
-                        self.fields["meter_device_kind"]: command.device_kind,
-                        self.fields["meter_type"]: command.meter_type,
-                        self.fields["meter_serial_number"]: command.serial_number,
-                        self.fields["meter_registry_number"]: command.registry_number,
-                        self.fields["meter_year"]: command.year,
-                        self.fields["meter_last_check"]: command.last_check,
-                        self.fields["meter_next_check"]: command.next_check,
-                    },
+                    "attributes": attrs,
                 }
             },
+        )
+        row_id = int((response.get("data", {}) or {}).get("id", 0) or 0)
+        if row_id <= 0:
+            raise ClientBaseError("ClientBase не вернул ID добавленного ИПУ")
+        return self._meter_from_values(row_id, command, device_kind)
+
+    async def update_meter(
+        self, application_id: int, meter_id: int, command: AddMeterRequest
+    ) -> WaterMeter:
+        existing = await self._request("GET", f"data610/{meter_id}")
+        existing_attrs = (existing.get("data", {}) or {}).get("attributes", {}) or {}
+        self._ensure_meter_application(existing_attrs, application_id)
+        application = await self._request("GET", f"data130/{application_id}")
+        application_attrs = (application.get("data", {}) or {}).get("attributes", {}) or {}
+        attrs = self._meter_attributes(application_attrs, application_id, command)
+        if not command.device_photo_base64:
+            attrs.pop(self.fields["meter_device_photo"], None)
+        if not command.passport_photo_base64:
+            attrs.pop(self.fields["meter_passport_photo"], None)
+        await self._request(
+            "PATCH",
+            f"data610/{meter_id}",
+            json={"data": {"type": "data610", "id": str(meter_id), "attributes": attrs}},
+        )
+        device_kind = "ИПУ ГВС" if "ГВС" in command.device_kind.upper() else "ИПУ ХВС"
+        return self._meter_from_values(meter_id, command, device_kind)
+
+    async def delete_meter(self, application_id: int, meter_id: int) -> None:
+        existing = await self._request("GET", f"data610/{meter_id}")
+        attrs = (existing.get("data", {}) or {}).get("attributes", {}) or {}
+        self._ensure_meter_application(attrs, application_id)
+        await self._request("DELETE", f"data610/{meter_id}")
+
+    def _ensure_meter_application(self, attrs: dict[str, Any], application_id: int) -> None:
+        raw_value = attrs.get(self.fields["meter_application_id"], "")
+        if str(application_id) not in re.findall(r"\d+", str(raw_value)):
+            raise ClientBaseError("ИПУ не относится к этой заявке")
+
+    def _meter_attributes(
+        self,
+        application_attrs: dict[str, Any],
+        application_id: int,
+        command: AddMeterRequest,
+    ) -> dict[str, Any]:
+        device_kind = "ИПУ ГВС" if "ГВС" in command.device_kind.upper() else "ИПУ ХВС"
+
+        def crm_date(value: str) -> str:
+            clean = value.strip()
+            return f"{clean} 00:00:00" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", clean) else clean
+
+        attrs: dict[str, Any] = {
+            self.fields["meter_address_id"]: application_attrs.get(self.fields["address_id"], ""),
+            self.fields["meter_client_id"]: application_attrs.get(self.fields["client_id"], ""),
+            self.fields["meter_application_id"]: str(application_id),
+            self.fields["meter_device_kind"]: device_kind,
+            self.fields["meter_type"]: command.meter_type,
+            self.fields["meter_serial_number"]: command.serial_number,
+            self.fields["meter_registry_number"]: command.registry_number,
+            self.fields["meter_year"]: command.year,
+            self.fields["meter_last_check"]: crm_date(command.last_check),
+            self.fields["meter_next_check"]: crm_date(command.next_check),
+            self.fields["meter_status"]: "Годен",
+        }
+        if command.device_photo_base64:
+            attrs[self.fields["meter_device_photo"]] = [{
+                "file_name": command.device_photo_filename,
+                "content": command.device_photo_base64,
+                "binary": True,
+            }]
+        if command.passport_photo_base64:
+            attrs[self.fields["meter_passport_photo"]] = [{
+                "file_name": command.passport_photo_filename,
+                "content": command.passport_photo_base64,
+                "binary": True,
+            }]
+        return attrs
+
+    @staticmethod
+    def _meter_from_values(
+        meter_id: int, command: AddMeterRequest, device_kind: str
+    ) -> WaterMeter:
+        return WaterMeter(
+            id=meter_id,
+            device_kind=device_kind,
+            meter_type=command.meter_type,
+            serial_number=command.serial_number,
+            registry_number=command.registry_number,
+            year=command.year,
+            last_check=command.last_check,
+            next_check=command.next_check,
+            status="Годен",
+            device_photo=command.device_photo_filename,
+            passport_photo=command.passport_photo_filename,
         )
 
     async def _application_photos(
@@ -695,6 +921,12 @@ class ClientBaseClient:
                     next_check=str(attrs.get(self.fields["meter_next_check"], "") or ""),
                     status=str(attrs.get(self.fields["meter_status"], "") or ""),
                     reading=str(attrs.get(self.fields["meter_reading"], "") or ""),
+                    device_photo=str(
+                        attrs.get(self.fields["meter_device_photo"], "") or ""
+                    ),
+                    passport_photo=str(
+                        attrs.get(self.fields["meter_passport_photo"], "") or ""
+                    ),
                 )
             )
         return result
@@ -746,6 +978,7 @@ class ClientBaseClient:
             address=address,
             client=client,
             interval=str(attrs.get(self.fields["interval"], "") or ""),
+            delivery_time=str(attrs.get(self.fields["delivery_time"], "") or ""),
             status=str(attrs.get(self.fields["status"], "")),
             phone_number=str(
                 attrs.get(self.fields["phone_number"], "") or ""

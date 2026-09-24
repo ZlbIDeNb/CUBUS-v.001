@@ -77,6 +77,8 @@ def test_water_meters_are_loaded_by_address():
             "meter_next_check": "f10570",
             "meter_status": "f12740",
             "meter_reading": "f16131",
+            "meter_device_photo": "f17860",
+            "meter_passport_photo": "f18021",
         }
         calls = []
 
@@ -334,10 +336,12 @@ def test_add_meter_links_address_client_and_application():
         client.fields = {
             "address_id": "f11180", "client_id": "f11360",
             "meter_address_id": "f11180", "meter_client_id": "f11360",
-            "meter_application_id": "f11410", "meter_device_kind": "f10540",
+            "meter_application_id": "f11440", "meter_device_kind": "f10540",
             "meter_type": "f10580", "meter_serial_number": "f10550",
             "meter_registry_number": "f16051", "meter_year": "f16081",
             "meter_last_check": "f10560", "meter_next_check": "f10570",
+            "meter_status": "f12740",
+            "meter_device_photo": "f17860", "meter_passport_photo": "f18021",
         }
         created = {}
 
@@ -345,17 +349,72 @@ def test_add_meter_links_address_client_and_application():
             if path == "data130/39801":
                 return {"data": {"attributes": {"f11180": "55", "f11360": "66"}}}
             created.update(kwargs["json"]["data"]["attributes"])
-            return {"data": {}}
+            return {"data": {"id": "900"}}
 
         client._request = fake_request
         await client.add_meter(
             39801,
-            AddMeterRequest(device_kind="ИПУ ХВС", meter_type="СВК", serial_number="123"),
+            AddMeterRequest(
+                device_kind="ИПУ ХВС",
+                meter_type="СВК",
+                serial_number="123",
+                device_photo_filename="meter.jpg",
+                device_photo_base64="YWJj",
+            ),
         )
 
         assert created["f11180"] == "55"
         assert created["f11360"] == "66"
-        assert created["f11410"] == "39801"
+        assert created["f11440"] == "39801"
         assert created["f10550"] == "123"
+        assert created["f10540"] == "ИПУ ХВС"
+        assert created["f12740"] == "Годен"
+        assert created["f17860"][0]["file_name"] == "meter.jpg"
+
+    asyncio.run(run_test())
+
+
+def test_meter_catalog_loads_sorted_dictionary_and_searches_both_values():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "meter_catalog_registry_number": "f17120",
+            "meter_catalog_designation": "f17130",
+        }
+
+        async def fake_list_all(path, filter_expression):
+            assert path == "data940"
+            return [
+                {"id": "1", "attributes": {"f17120": "123-45", "f17130": "СВК-15"}},
+                {"id": "2", "attributes": {"f17120": "987-65", "f17130": "Тепловодомер"}},
+            ]
+
+        client._list_all = fake_list_all
+
+        by_registry = await client.meter_catalog("123")
+        by_designation = await client.meter_catalog("тепло")
+        all_items = await client.meter_catalog()
+
+        assert by_registry[0].designation == "СВК-15"
+        assert by_designation[0].registry_number == "987-65"
+        assert [item.designation for item in all_items] == ["СВК-15", "Тепловодомер"]
+
+    asyncio.run(run_test())
+
+
+def test_delete_nomenclature_checks_application_relation():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {"nomenclature_application_id": "f5651"}
+        calls = []
+
+        async def fake_request(method, path, **kwargs):
+            calls.append((method, path))
+            return {"data": {"attributes": {"f5651": "39801"}}}
+
+        client._request = fake_request
+        await client.delete_nomenclature(39801, 77)
+
+        assert calls == [("GET", "data351/77"), ("DELETE", "data351/77")]
 
     asyncio.run(run_test())

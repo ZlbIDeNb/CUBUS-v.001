@@ -31,6 +31,7 @@ class ApplicationSummary(BaseModel):
     address: str = ""
     client: str = ""
     interval: str = ""
+    delivery_time: str = ""
     status: str
     phone_number: str = ""
     barrier: str = ""
@@ -40,6 +41,18 @@ class ApplicationSummary(BaseModel):
 class ApplicationStatusCount(BaseModel):
     status: str
     count: int = Field(ge=0)
+
+
+class ScheduleDay(BaseModel):
+    date: date
+    day: int
+    is_working: bool
+
+
+class MaterialUsageItem(BaseModel):
+    name: str
+    quantity: str = ""
+    total: str = ""
 
 
 class EmployeeEquipment(BaseModel):
@@ -78,6 +91,8 @@ class WaterMeter(BaseModel):
     next_check: str = ""
     status: str = ""
     reading: str = ""
+    device_photo: str = ""
+    passport_photo: str = ""
 
 
 class ApplicationPhoto(BaseModel):
@@ -105,6 +120,12 @@ class PriceListItem(BaseModel):
     price: str = ""
 
 
+class MeterCatalogItem(BaseModel):
+    id: int
+    registry_number: str = ""
+    designation: str = ""
+
+
 class AddNomenclatureRequest(BaseModel):
     price_list_id: int
     quantity: int = Field(default=1, ge=1)
@@ -118,6 +139,10 @@ class AddMeterRequest(BaseModel):
     year: str = ""
     last_check: str = ""
     next_check: str = ""
+    device_photo_filename: str = ""
+    device_photo_base64: str = ""
+    passport_photo_filename: str = ""
+    passport_photo_base64: str = ""
 
 
 class UploadPhotoRequest(BaseModel):

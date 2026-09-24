@@ -42,6 +42,12 @@ class Repository {
 
     suspend fun profile(): UserProfile = api.profile(auth())
 
+    suspend fun schedule(year: Int, month: Int): List<ScheduleDay> =
+        api.schedule(auth(), year, month)
+
+    suspend fun materialUsage(workDate: String): List<MaterialUsageItem> =
+        api.materialUsage(auth(), workDate)
+
     suspend fun applications(status: String, workDate: String): List<ApplicationSummary> =
         api.applications(auth(), status, workDate)
 
@@ -81,8 +87,33 @@ class Repository {
         api.addNomenclature(auth(), id, request)
     }
 
-    suspend fun addMeter(id: Long, request: AddMeterRequest) {
-        api.addMeter(auth(), id, request)
+    suspend fun deleteNomenclature(id: Long, nomenclatureId: Long) {
+        api.deleteNomenclature(auth(), id, nomenclatureId)
+    }
+
+    suspend fun meterCatalog(query: String): List<MeterCatalogItem> =
+        api.meterCatalog(auth(), query)
+
+    suspend fun addMeter(id: Long, request: AddMeterRequest): WaterMeter =
+        try {
+            api.addMeter(auth(), id, request)
+        } catch (error: HttpException) {
+            throw IllegalStateException(apiErrorDetail(error))
+        }
+
+    suspend fun updateMeter(id: Long, meterId: Long, request: AddMeterRequest): WaterMeter =
+        try {
+            api.updateMeter(auth(), id, meterId, request)
+        } catch (error: HttpException) {
+            throw IllegalStateException(apiErrorDetail(error))
+        }
+
+    suspend fun deleteMeter(id: Long, meterId: Long) {
+        try {
+            api.deleteMeter(auth(), id, meterId)
+        } catch (error: HttpException) {
+            throw IllegalStateException(apiErrorDetail(error))
+        }
     }
 
     suspend fun deletePhoto(id: Long, field: String, filename: String) {
@@ -90,4 +121,11 @@ class Repository {
     }
 
     private fun auth(): String = "Bearer ${requireNotNull(token) { "Требуется вход" }}"
+
+    private fun apiErrorDetail(error: HttpException): String {
+        val body = error.response()?.errorBody()?.string().orEmpty()
+        return runCatching {
+            JsonParser.parseString(body).asJsonObject["detail"].asString
+        }.getOrNull() ?: "HTTP ${error.code()}"
+    }
 }

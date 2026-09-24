@@ -30,6 +30,19 @@ interface ApiService {
         @Header("Authorization") authorization: String,
     ): UserProfile
 
+    @GET("api/v1/schedule")
+    suspend fun schedule(
+        @Header("Authorization") authorization: String,
+        @Query("year") year: Int,
+        @Query("month") month: Int,
+    ): List<ScheduleDay>
+
+    @GET("api/v1/material-usage")
+    suspend fun materialUsage(
+        @Header("Authorization") authorization: String,
+        @Query("work_date") workDate: String,
+    ): List<MaterialUsageItem>
+
     @GET("api/v1/applications/{id}")
     suspend fun application(
         @Header("Authorization") authorization: String,
@@ -84,11 +97,39 @@ interface ApiService {
         @Body request: AddNomenclatureRequest,
     )
 
+    @DELETE("api/v1/applications/{id}/nomenclature/{nomenclatureId}")
+    suspend fun deleteNomenclature(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Path("nomenclatureId") nomenclatureId: Long,
+    )
+
+    @GET("api/v1/meter-catalog")
+    suspend fun meterCatalog(
+        @Header("Authorization") authorization: String,
+        @Query("q") query: String,
+    ): List<MeterCatalogItem>
+
     @POST("api/v1/applications/{id}/meters")
     suspend fun addMeter(
         @Header("Authorization") authorization: String,
         @Path("id") id: Long,
         @Body request: AddMeterRequest,
+    ): WaterMeter
+
+    @retrofit2.http.PATCH("api/v1/applications/{id}/meters/{meterId}")
+    suspend fun updateMeter(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Path("meterId") meterId: Long,
+        @Body request: AddMeterRequest,
+    ): WaterMeter
+
+    @DELETE("api/v1/applications/{id}/meters/{meterId}")
+    suspend fun deleteMeter(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+        @Path("meterId") meterId: Long,
     )
 
     @DELETE("api/v1/applications/{id}/photos")

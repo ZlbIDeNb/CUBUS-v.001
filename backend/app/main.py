@@ -16,11 +16,15 @@ from .models import (
     EmployeeProfile,
     OperationResult,
     NomenclatureItem,
+    MeterCatalogItem,
+    MaterialUsageItem,
     PhotoContent,
     PriceListItem,
     RegisterRequest,
+    ScheduleDay,
     TokenResponse,
     UploadPhotoRequest,
+    WaterMeter,
 )
 
 
@@ -80,6 +84,33 @@ async def profile(
         return await crm.employee_profile(
             user["sub"], user.get("role", ""), user.get("device", "")
         )
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/schedule", response_model=list[ScheduleDay])
+async def schedule(
+    year: int,
+    month: int,
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=422, detail="Некорректный месяц")
+    try:
+        return await crm.employee_schedule(user["sub"], year, month)
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/material-usage", response_model=list[MaterialUsageItem])
+async def material_usage(
+    work_date: date,
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.material_usage(user["sub"], work_date)
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -173,7 +204,36 @@ async def add_application_nomenclature(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/api/v1/applications/{application_id}/meters")
+@app.delete("/api/v1/applications/{application_id}/nomenclature/{nomenclature_id}")
+async def delete_application_nomenclature(
+    application_id: int,
+    nomenclature_id: int,
+    _: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        await crm.delete_nomenclature(application_id, nomenclature_id)
+        return {"success": True}
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/meter-catalog", response_model=list[MeterCatalogItem])
+async def meter_catalog(
+    q: str = "",
+    _: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.meter_catalog(q)
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/v1/applications/{application_id}/meters",
+    response_model=WaterMeter,
+)
 async def add_application_meter(
     application_id: int,
     command: AddMeterRequest,
@@ -181,7 +241,37 @@ async def add_application_meter(
     crm: ClientBaseClient = Depends(get_client_base),
 ):
     try:
-        await crm.add_meter(application_id, command)
+        return await crm.add_meter(application_id, command)
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.patch(
+    "/api/v1/applications/{application_id}/meters/{meter_id}",
+    response_model=WaterMeter,
+)
+async def update_application_meter(
+    application_id: int,
+    meter_id: int,
+    command: AddMeterRequest,
+    _: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.update_meter(application_id, meter_id, command)
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.delete("/api/v1/applications/{application_id}/meters/{meter_id}")
+async def delete_application_meter(
+    application_id: int,
+    meter_id: int,
+    _: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        await crm.delete_meter(application_id, meter_id)
         return {"success": True}
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

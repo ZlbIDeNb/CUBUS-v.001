@@ -20,6 +20,8 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -35,6 +37,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -42,6 +45,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,6 +61,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -84,11 +90,17 @@ import ru.zilisnik.mobile.data.ApplicationStatusCount
 import ru.zilisnik.mobile.data.ApplicationSummary
 import ru.zilisnik.mobile.data.AddMeterRequest
 import ru.zilisnik.mobile.data.PriceListItem
+import ru.zilisnik.mobile.data.MeterCatalogItem
+import ru.zilisnik.mobile.data.MaterialUsageItem
 import ru.zilisnik.mobile.data.UserProfile
+import ru.zilisnik.mobile.data.ScheduleDay
 import ru.zilisnik.mobile.data.WaterMeter
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -201,10 +213,15 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                     state.selected != null && state.completionWizard -> CompletionWizardScreen(
                         details = state.selected!!,
                         priceList = state.priceList,
+                        meterCatalog = state.meterCatalog,
+                        meterCatalogError = state.meterCatalogError,
                         onBack = vm::back,
                         onUploadPhoto = vm::uploadPhoto,
                         onAddNomenclature = vm::addNomenclature,
+                        onDeleteNomenclature = vm::deleteNomenclature,
                         onAddMeter = vm::addMeter,
+                        onUpdateMeter = vm::updateMeter,
+                        onDeleteMeter = vm::deleteMeter,
                         onConfirm = vm::close,
                     )
                     state.selected != null -> DetailsScreen(
@@ -220,8 +237,19 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         photoLoadError = state.photoLoadError,
                     )
                     state.loading -> CircularProgressIndicator()
-                    section == AppSection.MAIN -> MainScreen(state.profile, state.todayStatusCounts)
-                    section == AppSection.PROFILE -> ProfileScreen(state.profile)
+                    section == AppSection.MAIN -> MainScreen(
+                        state.profile,
+                        state.todayStatusCounts,
+                        state.todayApplications,
+                        state.materialUsage,
+                        vm::select,
+                    )
+                    section == AppSection.PROFILE -> ProfileScreen(
+                        state.profile,
+                        state.scheduleDays,
+                        state.scheduleMonthOffset,
+                        vm::selectScheduleMonth,
+                    )
                     else -> ApplicationsScreen(
                         applications = state.applications,
                         selectedDayOffset = state.applicationDayOffset,
@@ -264,9 +292,12 @@ private fun RegistrationScreen(onRegister: (String, String) -> Unit) {
 }
 
 @Composable
-private fun MainScreen(
+private fun ColumnScope.MainScreen(
     profile: UserProfile?,
     statusCounts: List<ApplicationStatusCount>,
+    applications: List<ApplicationSummary>,
+    materialUsage: List<MaterialUsageItem>,
+    onOpen: (Long) -> Unit,
 ) {
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) {
@@ -276,35 +307,122 @@ private fun MainScreen(
         }
     }
     val formatter = remember { SimpleDateFormat("dd.MM.yyyy, HH:mm:ss", Locale("ru")) }
-    Text(
-        profile?.full_name?.ifBlank { profile.login } ?: "Метролог",
-        style = MaterialTheme.typography.headlineSmall,
-    )
-    Text(formatter.format(now), style = MaterialTheme.typography.titleLarge)
-    Text("Статистика на сегодня", style = MaterialTheme.typography.headlineSmall)
-    StatusCard("Новые", statusCounts.countFor("Новая"))
-    StatusCard("Выполненные", statusCounts.countFor("Выполнено"))
-    StatusCard("На доработке", statusCounts.countFor("На Доработку"))
+    Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            profile?.full_name?.ifBlank { profile.login } ?: "Метролог",
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(formatter.format(now), style = MaterialTheme.typography.titleLarge)
+        Text("Статистика на сегодня", style = MaterialTheme.typography.headlineSmall)
+        StatusCard(
+            "Новые",
+            statusCounts.countFor("Новая"),
+            applications.filter { it.status == "Новая" },
+            onOpen,
+        )
+        StatusCard(
+            "Выполненные",
+            statusCounts.countFor("Выполнено"),
+            applications.filter { it.status == "Выполнено" },
+            onOpen,
+        )
+        StatusCard(
+            "На доработке",
+            statusCounts.countFor("На Доработку"),
+            applications.filter { it.status == "На Доработку" },
+            onOpen,
+        )
+        MaterialUsageCard(materialUsage)
+    }
 }
 
 private fun List<ApplicationStatusCount>.countFor(status: String): Int =
     firstOrNull { it.status == status }?.count ?: 0
 
 @Composable
-private fun StatusCard(title: String, count: Int) {
+private fun StatusCard(
+    title: String,
+    count: Int,
+    applications: List<ApplicationSummary>,
+    onOpen: (Long) -> Unit,
+) {
+    var expanded by rememberSaveable(title) { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(count.toString(), style = MaterialTheme.typography.titleLarge)
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text("$count  ${if (expanded) "▲" else "▼"}", style = MaterialTheme.typography.titleLarge)
+            }
+            if (expanded) {
+                if (applications.isEmpty()) {
+                    Text("Заявок нет", modifier = Modifier.padding(start = 16.dp, bottom = 16.dp))
+                }
+                applications.sortedWith(applicationDeliveryComparator()).forEachIndexed { index, item ->
+                    Text(
+                        "${index + 1}. № ${item.number}" +
+                            item.delivery_time.takeIf(String::isNotBlank)?.let { " — $it" }.orEmpty(),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpen(item.id) }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun applicationDeliveryComparator(): Comparator<ApplicationSummary> =
+    compareBy<ApplicationSummary> { it.delivery_time.isBlank() }
+        .thenBy { it.delivery_time }
+        .thenBy { it.number }
+
+@Composable
+private fun MaterialUsageCard(items: List<MaterialUsageItem>) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Card(Modifier.fillMaxWidth()) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Затраченный материал", style = MaterialTheme.typography.titleMedium)
+                Text("${items.size}  ${if (expanded) "▲" else "▼"}")
+            }
+            if (expanded) {
+                if (items.isEmpty()) {
+                    Text("Товары сегодня не списывались", modifier = Modifier.padding(16.dp))
+                }
+                items.forEachIndexed { index, item ->
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text("${index + 1}. ${item.name}", style = MaterialTheme.typography.labelLarge)
+                        Text("Количество: ${item.quantity}   Сумма: ${item.total}")
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ColumnScope.ProfileScreen(profile: UserProfile?) {
+private fun ColumnScope.ProfileScreen(
+    profile: UserProfile?,
+    scheduleDays: List<ScheduleDay>,
+    scheduleMonthOffset: Int,
+    onMonthSelect: (Int) -> Unit,
+) {
     val context = LocalContext.current
     Column(
         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
@@ -321,6 +439,7 @@ private fun ColumnScope.ProfileScreen(profile: UserProfile?) {
                 ProfileLine("Номер Папки", profile?.folder_number)
             }
         }
+        WorkScheduleCalendar(scheduleDays, scheduleMonthOffset, onMonthSelect)
         Text("Оборудование у метролога", style = MaterialTheme.typography.headlineSmall)
         profile?.equipment.orEmpty().forEach { equipment ->
             CollapsibleSection(
@@ -347,6 +466,82 @@ private fun ColumnScope.ProfileScreen(profile: UserProfile?) {
                         openWebPage(context, equipment.arshin_url)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkScheduleCalendar(
+    days: List<ScheduleDay>,
+    monthOffset: Int,
+    onMonthSelect: (Int) -> Unit,
+) {
+    val monthCalendar = remember(monthOffset) {
+        Calendar.getInstance().apply {
+            set(Calendar.DAY_OF_MONTH, 1)
+            add(Calendar.MONTH, monthOffset)
+        }
+    }
+    val monthName = remember(monthOffset) {
+        SimpleDateFormat("LLLL yyyy", Locale("ru")).format(monthCalendar.time)
+            .replaceFirstChar { it.uppercase(Locale("ru")) }
+    }
+    val firstWeekday = remember(monthOffset) {
+        (monthCalendar.get(Calendar.DAY_OF_WEEK) + 5) % 7
+    }
+    val cells: List<ScheduleDay?> = List(firstWeekday) { null } + days
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("График работы", style = MaterialTheme.typography.titleLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = monthOffset == 0,
+                    onClick = { onMonthSelect(0) },
+                    label = { Text("Этот месяц") },
+                )
+                FilterChip(
+                    selected = monthOffset == 1,
+                    onClick = { onMonthSelect(1) },
+                    label = { Text("Следующий месяц") },
+                )
+            }
+            Text(
+                monthName,
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(Modifier.fillMaxWidth()) {
+                listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс").forEach { name ->
+                    Text(name, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+                }
+            }
+            cells.chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    (week + List(7 - week.size) { null }).forEach { day ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                                .background(
+                                    when {
+                                        day == null -> Color.Transparent
+                                        day.is_working -> Color(0xFFC8E6C9)
+                                        else -> Color(0xFFFFCDD2)
+                                    },
+                                    RoundedCornerShape(6.dp),
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            day?.let { Text(it.day.toString()) }
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("■ Рабочий", color = Color(0xFF2E7D32))
+                Text("■ Выходной", color = Color(0xFFC62828))
             }
         }
     }
@@ -390,14 +585,18 @@ private fun ColumnScope.ApplicationsScreen(
         modifier = Modifier.weight(1f),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(applications.take(10), key = { it.id }) { item ->
-            ApplicationCard(item, onOpen, onComplete, onRework)
+        itemsIndexed(
+            applications.sortedWith(applicationDeliveryComparator()),
+            key = { _, item -> item.id },
+        ) { index, item ->
+            ApplicationCard(index + 1, item, onOpen, onComplete, onRework)
         }
     }
 }
 
 @Composable
 private fun ApplicationCard(
+    position: Int,
     item: ApplicationSummary,
     onOpen: (Long) -> Unit,
     onComplete: (Long) -> Unit,
@@ -411,7 +610,8 @@ private fun ApplicationCard(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Text("№ ${item.number}", style = MaterialTheme.typography.titleMedium)
+                Text("$position. № ${item.number}", style = MaterialTheme.typography.titleMedium)
+                InformationLine("Время доставки", item.delivery_time)
                 InformationLine("ФИО клиента", item.client)
                 ActionInformationLine("Адрес", item.address) {
                     openNavigator(context, item.address)
@@ -457,10 +657,15 @@ private fun ApplicationCard(
 private fun ColumnScope.CompletionWizardScreen(
     details: ApplicationDetails,
     priceList: List<PriceListItem>,
+    meterCatalog: List<MeterCatalogItem>,
+    meterCatalogError: String?,
     onBack: () -> Unit,
     onUploadPhoto: (Long, String, String, String) -> Unit,
     onAddNomenclature: (Long, Long, Int) -> Unit,
-    onAddMeter: (Long, AddMeterRequest) -> Unit,
+    onDeleteNomenclature: (Long, Long) -> Unit,
+    onAddMeter: (Long, AddMeterRequest, (WaterMeter) -> Unit) -> Unit,
+    onUpdateMeter: (Long, Long, AddMeterRequest, (WaterMeter) -> Unit) -> Unit,
+    onDeleteMeter: (Long, Long, () -> Unit) -> Unit,
     onConfirm: (Long, String, Int, Int) -> Unit,
 ) {
     var step by rememberSaveable(details.id) { mutableStateOf(0) }
@@ -474,12 +679,18 @@ private fun ColumnScope.CompletionWizardScreen(
     var meterYear by rememberSaveable(details.id) { mutableStateOf("") }
     var lastCheck by rememberSaveable(details.id) { mutableStateOf("") }
     var nextCheck by rememberSaveable(details.id) { mutableStateOf("") }
-    var meterAdded by rememberSaveable(details.id) { mutableStateOf(false) }
-    var paymentType by rememberSaveable(details.id) { mutableStateOf("По договору") }
+    var sessionMeterIds by rememberSaveable(details.id) { mutableStateOf(emptyList<Long>()) }
+    var editingMeterId by rememberSaveable(details.id) { mutableStateOf<Long?>(null) }
+    var devicePhotoName by rememberSaveable(details.id) { mutableStateOf("") }
+    var devicePhotoBase64 by rememberSaveable(details.id) { mutableStateOf("") }
+    var passportPhotoName by rememberSaveable(details.id) { mutableStateOf("") }
+    var passportPhotoBase64 by rememberSaveable(details.id) { mutableStateOf("") }
+    var meterSearch by rememberSaveable(details.id) { mutableStateOf("") }
+    var showRussianKeyboard by rememberSaveable(details.id) { mutableStateOf(false) }
+    var paymentType by rememberSaveable(details.id) { mutableStateOf("Наличные") }
     var cashSum by rememberSaveable(details.id) { mutableStateOf("0") }
     var cardSum by rememberSaveable(details.id) { mutableStateOf("0") }
     var priceMenu by remember { mutableStateOf(false) }
-    var paymentMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val currentPhotoType = photoTypes[photoIndex.coerceIn(0, photoTypes.lastIndex)]
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -499,7 +710,78 @@ private fun ColumnScope.CompletionWizardScreen(
             }
         }
     }
+    val devicePhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { selected ->
+            readImageContent(context, selected)?.let { (filename, content) ->
+                devicePhotoName = filename
+                devicePhotoBase64 = content
+            }
+        }
+    }
+    val passportPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { selected ->
+            readImageContent(context, selected)?.let { (filename, content) ->
+                passportPhotoName = filename
+                passportPhotoBase64 = content
+            }
+        }
+    }
     val selectedPrice = priceList.firstOrNull { it.id == selectedPriceId }
+    val nomenclatureTotal = details.nomenclature.sumOf { item ->
+        item.total.replace(" ", "").replace(",", ".").toDoubleOrNull() ?: 0.0
+    }.roundToInt()
+
+    LaunchedEffect(step, nomenclatureTotal, paymentType) {
+        if (step == 3) {
+            when (paymentType) {
+                "Наличные" -> { cashSum = nomenclatureTotal.toString(); cardSum = "0" }
+                "Эквайринг" -> { cashSum = "0"; cardSum = nomenclatureTotal.toString() }
+            }
+        }
+    }
+
+    fun clearMeterForm() {
+        editingMeterId = null
+        meterType = ""
+        serialNumber = ""
+        registryNumber = ""
+        meterYear = ""
+        lastCheck = ""
+        nextCheck = ""
+        devicePhotoName = ""
+        devicePhotoBase64 = ""
+        passportPhotoName = ""
+        passportPhotoBase64 = ""
+    }
+
+    fun editMeter(meter: WaterMeter) {
+        editingMeterId = meter.id
+        waterKind = meter.device_kind
+        meterType = meter.meter_type
+        serialNumber = meter.serial_number
+        registryNumber = meter.registry_number
+        meterYear = meter.year
+        lastCheck = meter.last_check.substringBefore(" ")
+        nextCheck = meter.next_check.substringBefore(" ")
+        devicePhotoName = meter.device_photo
+        devicePhotoBase64 = ""
+        passportPhotoName = meter.passport_photo
+        passportPhotoBase64 = ""
+    }
+
+    fun meterRequest() = AddMeterRequest(
+        device_kind = waterKind,
+        meter_type = meterType,
+        serial_number = serialNumber,
+        registry_number = registryNumber,
+        year = meterYear,
+        last_check = lastCheck,
+        next_check = nextCheck,
+        device_photo_filename = devicePhotoName,
+        device_photo_base64 = devicePhotoBase64,
+        passport_photo_filename = passportPhotoName,
+        passport_photo_base64 = passportPhotoBase64,
+    )
 
     Column(
         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
@@ -558,6 +840,9 @@ private fun ColumnScope.CompletionWizardScreen(
                             InformationLine("Цена", item.price)
                             InformationLine("Кол-во", item.quantity)
                             InformationLine("Сумма", item.total)
+                            Button(onClick = { onDeleteNomenclature(details.id, item.id) }) {
+                                Text("Удалить позицию")
+                            }
                         }
                     }
                 }
@@ -594,6 +879,70 @@ private fun ColumnScope.CompletionWizardScreen(
 
             2 -> {
                 Text("Добавление ИПУ", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Поиск в справочнике по номеру в госреестре или обозначению типа СИ",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                val normalizedSearch = meterSearch.trim()
+                val catalogMatches = if (normalizedSearch.length < 2) {
+                    emptyList()
+                } else {
+                    meterCatalog.filter { item ->
+                        item.registry_number.contains(normalizedSearch, ignoreCase = true) ||
+                            item.designation.contains(normalizedSearch, ignoreCase = true)
+                    }.sortedWith(
+                        compareBy<MeterCatalogItem> { it.designation.lowercase(Locale("ru")) }
+                            .thenBy { it.registry_number.lowercase(Locale("ru")) }
+                    ).take(30)
+                }
+                Box(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = meterSearch,
+                        onValueChange = { meterSearch = it },
+                        label = { Text("Номер или обозначение типа СИ") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    DropdownMenu(
+                        expanded = normalizedSearch.length >= 2 && catalogMatches.isNotEmpty(),
+                        onDismissRequest = { meterSearch = "" },
+                        modifier = Modifier.fillMaxWidth(0.9f),
+                    ) {
+                        catalogMatches.forEach { item ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(item.designation)
+                                        Text(
+                                            item.registry_number,
+                                            style = MaterialTheme.typography.labelMedium,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    meterType = item.designation
+                                    registryNumber = item.registry_number
+                                    meterSearch = ""
+                                },
+                            )
+                        }
+                    }
+                }
+                TextButton(onClick = { showRussianKeyboard = !showRussianKeyboard }) {
+                    Text(if (showRussianKeyboard) "Скрыть русские буквы" else "Показать русские буквы")
+                }
+                if (showRussianKeyboard) {
+                    RussianSearchKeyboard(
+                        onLetter = { meterSearch += it },
+                        onBackspace = { if (meterSearch.isNotEmpty()) meterSearch = meterSearch.dropLast(1) },
+                        onClear = { meterSearch = "" },
+                    )
+                }
+                meterCatalogError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                }
+                if (normalizedSearch.length >= 2 && catalogMatches.isEmpty() && meterCatalogError == null) {
+                    Text("Совпадения не найдены")
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = waterKind == "ИПУ ХВС",
@@ -610,72 +959,114 @@ private fun ColumnScope.CompletionWizardScreen(
                 WizardField("Серийный номер", serialNumber) { serialNumber = it }
                 WizardField("Номер в госреестре", registryNumber) { registryNumber = it }
                 WizardField("Год выпуска", meterYear) { meterYear = it }
-                WizardField("Дата последней поверки", lastCheck) { lastCheck = it }
-                WizardField("Дата очередной поверки", nextCheck) { nextCheck = it }
+                WizardDateField("Дата последней поверки", lastCheck) { lastCheck = it }
+                WizardDateField("Дата очередной поверки", nextCheck) { nextCheck = it }
+                Text("Фото прибора обязательно", style = MaterialTheme.typography.labelLarge)
+                Button(onClick = { devicePhotoPicker.launch("image/*") }) {
+                    Text(if (devicePhotoName.isBlank()) "Добавить фото прибора *" else "Фото: $devicePhotoName")
+                }
+                Button(onClick = { passportPhotoPicker.launch("image/*") }) {
+                    Text(if (passportPhotoName.isBlank()) "Добавить фото паспорта" else "Паспорт: $passportPhotoName")
+                }
+                val requiredPhotoReady = devicePhotoName.isNotBlank() &&
+                    (editingMeterId != null || devicePhotoBase64.isNotBlank())
                 Button(
-                    enabled = meterType.isNotBlank() && serialNumber.isNotBlank(),
+                    enabled = meterType.isNotBlank() && serialNumber.isNotBlank() && requiredPhotoReady,
                     onClick = {
-                        onAddMeter(
-                            details.id,
-                            AddMeterRequest(
-                                device_kind = waterKind,
-                                meter_type = meterType,
-                                serial_number = serialNumber,
-                                registry_number = registryNumber,
-                                year = meterYear,
-                                last_check = lastCheck,
-                                next_check = nextCheck,
-                            ),
-                        )
-                        meterAdded = true
-                        meterType = ""
-                        serialNumber = ""
-                        registryNumber = ""
-                        meterYear = ""
-                        lastCheck = ""
-                        nextCheck = ""
+                        val meterId = editingMeterId
+                        if (meterId == null) {
+                            onAddMeter(details.id, meterRequest()) { added ->
+                                sessionMeterIds = (sessionMeterIds + added.id).distinct()
+                                clearMeterForm()
+                            }
+                        } else {
+                            onUpdateMeter(details.id, meterId, meterRequest()) {
+                                clearMeterForm()
+                            }
+                        }
                     },
-                ) { Text("Добавить ИПУ") }
-                if (meterAdded) Text("✓ ИПУ добавлен. Можно добавить ещё один или продолжить.")
+                ) { Text(if (editingMeterId == null) "Добавить ИПУ" else "Сохранить изменения") }
+                if (editingMeterId != null) {
+                    TextButton(onClick = { clearMeterForm() }) { Text("Отменить редактирование") }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { step = 1 }) { Text("Назад") }
-                    Button(enabled = meterAdded, onClick = { step = 3 }) { Text("Продолжить") }
+                    Button(
+                        enabled = sessionMeterIds.isNotEmpty() && editingMeterId == null,
+                        onClick = { step = 3 },
+                    ) { Text("Продолжить") }
                 }
+                val sessionMeters = details.water_meters.filter { it.id in sessionMeterIds }
+                SessionMeterList(
+                    title = "Холодная вода",
+                    meters = sessionMeters.filter { it.device_kind.contains("ХВС", true) },
+                    onEdit = ::editMeter,
+                    onDelete = { meter ->
+                        onDeleteMeter(details.id, meter.id) {
+                            sessionMeterIds = sessionMeterIds - meter.id
+                            if (editingMeterId == meter.id) clearMeterForm()
+                        }
+                    },
+                )
+                SessionMeterList(
+                    title = "Горячая вода",
+                    meters = sessionMeters.filter { it.device_kind.contains("ГВС", true) },
+                    onEdit = ::editMeter,
+                    onDelete = { meter ->
+                        onDeleteMeter(details.id, meter.id) {
+                            sessionMeterIds = sessionMeterIds - meter.id
+                            if (editingMeterId == meter.id) clearMeterForm()
+                        }
+                    },
+                )
             }
 
             3 -> {
                 Text("Вид оплаты", style = MaterialTheme.typography.titleLarge)
-                Box {
-                    Button(onClick = { paymentMenu = true }) { Text(paymentType) }
-                    DropdownMenu(paymentMenu, { paymentMenu = false }) {
-                        listOf("Наличные", "Эквайринг", "Эквайринг + Наличные", "По договору")
-                            .forEach { type ->
-                                DropdownMenuItem(
-                                    text = { Text(type) },
-                                    onClick = { paymentType = type; paymentMenu = false },
-                                )
+                InformationLine("Сумма номенклатуры", nomenclatureTotal.toString())
+                listOf("Наличные", "Эквайринг", "Эквайринг + Наличные").forEach { type ->
+                    FilterChip(
+                        selected = paymentType == type,
+                        onClick = {
+                            paymentType = type
+                            when (type) {
+                                "Наличные" -> { cashSum = nomenclatureTotal.toString(); cardSum = "0" }
+                                "Эквайринг" -> { cashSum = "0"; cardSum = nomenclatureTotal.toString() }
+                                else -> { cashSum = "0"; cardSum = "0" }
                             }
-                    }
+                        },
+                        label = { Text(type) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
-                if (paymentType == "Наличные" || paymentType == "Эквайринг + Наличные") {
+                if (paymentType == "Эквайринг + Наличные") {
                     OutlinedTextField(
                         cashSum,
                         { cashSum = it.filter(Char::isDigit) },
                         label = { Text("Сумма наличными") },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                }
-                if (paymentType == "Эквайринг" || paymentType == "Эквайринг + Наличные") {
                     OutlinedTextField(
                         cardSum,
                         { cardSum = it.filter(Char::isDigit) },
                         label = { Text("Сумма эквайринга") },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    val entered = (cashSum.toIntOrNull() ?: 0) + (cardSum.toIntOrNull() ?: 0)
+                    Text(
+                        "Указано: $entered из $nomenclatureTotal",
+                        color = if (entered == nomenclatureTotal) {
+                            MaterialTheme.colorScheme.primary
+                        } else MaterialTheme.colorScheme.error,
+                    )
                 }
+                val paymentValid = paymentType != "Эквайринг + Наличные" ||
+                    (cashSum.toIntOrNull() ?: 0) + (cardSum.toIntOrNull() ?: 0) == nomenclatureTotal
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { step = 2 }) { Text("Назад") }
-                    Button(onClick = { step = 4 }) { Text("Сформировать отчёт") }
+                    Button(enabled = paymentValid, onClick = { step = 4 }) {
+                        Text("Сформировать отчёт")
+                    }
                 }
             }
 
@@ -697,10 +1088,8 @@ private fun ColumnScope.CompletionWizardScreen(
                             Text("• ${it.device_kind}: ${it.meter_type}, № ${it.serial_number}")
                         }
                         InformationLine("Вид оплаты", paymentType)
-                        if (paymentType != "По договору") {
-                            InformationLine("Наличные", cashSum.ifBlank { "0" })
-                            InformationLine("Эквайринг", cardSum.ifBlank { "0" })
-                        }
+                        InformationLine("Наличные", cashSum.ifBlank { "0" })
+                        InformationLine("Эквайринг", cardSum.ifBlank { "0" })
                     }
                 }
                 Text(
@@ -731,6 +1120,115 @@ private fun WizardField(label: String, value: String, onChange: (String) -> Unit
         label = { Text(label) },
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+@Composable
+private fun SessionMeterList(
+    title: String,
+    meters: List<WaterMeter>,
+    onEdit: (WaterMeter) -> Unit,
+    onDelete: (WaterMeter) -> Unit,
+) {
+    Text(title, style = MaterialTheme.typography.titleLarge)
+    if (meters.isEmpty()) Text("Добавленных приборов нет")
+    meters.forEachIndexed { index, meter ->
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("${index + 1}. ${meter.meter_type}", style = MaterialTheme.typography.titleMedium)
+                InformationLine("Серийный номер", meter.serial_number)
+                InformationLine("Номер в госреестре", meter.registry_number)
+                InformationLine("Фото прибора", meter.device_photo)
+                if (meter.passport_photo.isNotBlank()) {
+                    InformationLine("Фото паспорта", meter.passport_photo)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onEdit(meter) }) { Text("Редактировать") }
+                    TextButton(onClick = { onDelete(meter) }) { Text("Удалить") }
+                }
+            }
+        }
+    }
+}
+
+private fun readImageContent(context: Context, uri: Uri): Pair<String, String>? {
+    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+    val filename = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+    } ?: "photo-${System.currentTimeMillis()}.jpg"
+    return filename to Base64.encodeToString(bytes, Base64.NO_WRAP)
+}
+
+@Composable
+private fun RussianSearchKeyboard(
+    onLetter: (String) -> Unit,
+    onBackspace: () -> Unit,
+    onClear: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            listOf("ЁЙЦУКЕНГШЩЗХЪ", "ФЫВАПРОЛДЖЭ", "ЯЧСМИТЬБЮ").forEach { letters ->
+                Row(Modifier.fillMaxWidth()) {
+                    letters.forEach { letter ->
+                        TextButton(
+                            onClick = { onLetter(letter.lowercase()) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(0.dp),
+                        ) { Text(letter.toString()) }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TextButton(onClick = onBackspace, modifier = Modifier.weight(1f)) {
+                    Text("Удалить букву")
+                }
+                TextButton(onClick = onClear, modifier = Modifier.weight(1f)) {
+                    Text("Очистить")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun WizardDateField(label: String, value: String, onChange: (String) -> Unit) {
+    var showCalendar by remember { mutableStateOf(false) }
+    val pickerState = rememberDatePickerState()
+    OutlinedTextField(
+        value = value,
+        onValueChange = {},
+        readOnly = true,
+        label = { Text(label) },
+        trailingIcon = {
+            TextButton(onClick = { showCalendar = true }) { Text("Календарь") }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    if (showCalendar) {
+        DatePickerDialog(
+            onDismissRequest = { showCalendar = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let { millis ->
+                        val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                            timeZone = TimeZone.getTimeZone("UTC")
+                        }
+                        onChange(formatter.format(Date(millis)))
+                    }
+                    showCalendar = false
+                }) { Text("Выбрать") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCalendar = false }) { Text("Отмена") }
+            },
+        ) {
+            DatePicker(state = pickerState)
+        }
+    }
 }
 
 @Composable

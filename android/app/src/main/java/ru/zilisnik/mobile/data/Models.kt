@@ -38,6 +38,7 @@ data class ApplicationSummary(
     val address: String,
     val client: String,
     val interval: String,
+    val delivery_time: String,
     val status: String,
     val phone_number: String,
     val barrier: String,
@@ -45,6 +46,18 @@ data class ApplicationSummary(
 )
 
 data class ApplicationStatusCount(val status: String, val count: Int)
+
+data class ScheduleDay(
+    val date: String,
+    val day: Int,
+    val is_working: Boolean,
+)
+
+data class MaterialUsageItem(
+    val name: String,
+    val quantity: String,
+    val total: String,
+)
 
 data class WaterMeter(
     val id: Long,
@@ -59,6 +72,8 @@ data class WaterMeter(
     val next_check: String,
     val status: String,
     val reading: String,
+    val device_photo: String,
+    val passport_photo: String,
 )
 
 data class ApplicationPhoto(
@@ -84,6 +99,12 @@ data class PriceListItem(
     val price: String,
 )
 
+data class MeterCatalogItem(
+    val id: Long,
+    val registry_number: String,
+    val designation: String,
+)
+
 data class AddNomenclatureRequest(
     val price_list_id: Long,
     val quantity: Int,
@@ -97,6 +118,10 @@ data class AddMeterRequest(
     val year: String = "",
     val last_check: String = "",
     val next_check: String = "",
+    val device_photo_filename: String = "",
+    val device_photo_base64: String = "",
+    val passport_photo_filename: String = "",
+    val passport_photo_base64: String = "",
 )
 
 data class UploadPhotoRequest(
@@ -112,6 +137,7 @@ data class ApplicationDetails(
     val address: String,
     val client: String,
     val interval: String,
+    val delivery_time: String,
     val status: String,
     val phone_number: String,
     val phone_number_2: String,
