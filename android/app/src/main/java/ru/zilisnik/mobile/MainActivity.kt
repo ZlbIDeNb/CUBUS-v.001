@@ -238,6 +238,23 @@ private fun TextButton(
 }
 
 @Composable
+private fun BackIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.back_button),
+            contentDescription = "Назад",
+            modifier = Modifier.size(52.dp).clickable(onClick = onClick),
+        )
+    }
+}
+
+@Composable
 private fun FilterChip(
     selected: Boolean,
     onClick: () -> Unit,
@@ -407,13 +424,9 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                     },
                     navigationIcon = {
                         if (state.selected != null || section != AppSection.MAIN) {
-                            Image(
-                                painter = painterResource(R.drawable.back_button),
-                                contentDescription = "Назад",
-                                modifier = Modifier
-                                    .padding(start = 4.dp)
-                                    .size(52.dp)
-                                    .clickable {
+                            BackIconButton(
+                                modifier = Modifier.padding(start = 4.dp),
+                                onClick = {
                                     if (state.selected != null) {
                                         vm.back()
                                     } else {
@@ -1348,10 +1361,10 @@ private fun ColumnScope.CompletionWizardScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             if (photoIndex > 0) {
-                                TextButton(
+                                BackIconButton(
                                     modifier = Modifier.weight(1f),
                                     onClick = { photoIndex-- },
-                                ) { Text("Назад") }
+                                )
                             } else {
                                 TextButton(modifier = Modifier.weight(1f), onClick = onBack) {
                                     Text("Отмена")
@@ -1425,10 +1438,10 @@ private fun ColumnScope.CompletionWizardScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Spacer(Modifier.height(56.dp))
-                        Button(
+                        BackIconButton(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                             onClick = { serviceMenu = false },
-                        ) { Text("Назад") }
+                        )
                         Spacer(Modifier.height(8.dp))
                         HorizontalDivider()
                         servicePriceList.forEach { item ->
@@ -1457,10 +1470,10 @@ private fun ColumnScope.CompletionWizardScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Spacer(Modifier.height(56.dp))
-                        Button(
+                        BackIconButton(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                             onClick = { materialMenu = false },
-                        ) { Text("Назад") }
+                        )
                         Spacer(Modifier.height(8.dp))
                         HorizontalDivider()
                         materialPriceList.forEach { item ->
@@ -1520,10 +1533,10 @@ private fun ColumnScope.CompletionWizardScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Button(
+                    BackIconButton(
                         modifier = Modifier.weight(1f),
                         onClick = { step = 0 },
-                    ) { Text("Назад") }
+                    )
                     Button(
                         modifier = Modifier.weight(1f),
                         onClick = { step = 2 },
@@ -1696,7 +1709,7 @@ private fun ColumnScope.CompletionWizardScreen(
                     TextButton(onClick = { clearMeterForm() }) { Text("Отменить редактирование") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { step = 1 }) { Text("Назад") }
+                    BackIconButton(onClick = { step = 1 })
                     Button(
                         enabled = sessionMeterIds.isNotEmpty() && editingMeterId == null,
                         onClick = { step = 3 },
@@ -1769,7 +1782,7 @@ private fun ColumnScope.CompletionWizardScreen(
                 val paymentValid = paymentType != "Эквайринг + Наличные" ||
                     (cashSum.toIntOrNull() ?: 0) + (cardSum.toIntOrNull() ?: 0) == nomenclatureTotal
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { step = 2 }) { Text("Назад") }
+                    BackIconButton(onClick = { step = 2 })
                     Button(enabled = paymentValid, onClick = { step = 4 }) {
                         Text("Сформировать отчёт")
                     }
@@ -1803,7 +1816,7 @@ private fun ColumnScope.CompletionWizardScreen(
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { step = 3 }) { Text("Назад") }
+                    BackIconButton(onClick = { step = 3 })
                     Button(onClick = {
                         onConfirm(
                             details.id,
@@ -2181,9 +2194,7 @@ private fun ColumnScope.DetailsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         onClick = { onRework(details.id) },
                     ) { Text("Передать на доработку") }
-                    Button(modifier = Modifier.fillMaxWidth(), onClick = onBack) {
-                        Text("Назад")
-                    }
+                    BackIconButton(modifier = Modifier.fillMaxWidth(), onClick = onBack)
                 }
             }
         }
