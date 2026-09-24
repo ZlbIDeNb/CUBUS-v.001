@@ -41,6 +41,7 @@ data class ApplicationSummary(
     val delivery_time: String,
     val status: String,
     val phone_number: String,
+    val phone_number_2: String,
     val barrier: String,
     val comments: String,
 )
@@ -51,6 +52,8 @@ data class ScheduleDay(
     val date: String,
     val day: Int,
     val is_working: Boolean,
+    val has_record: Boolean,
+    val work_status: String,
 )
 
 data class MaterialUsageItem(
@@ -71,6 +74,7 @@ data class WaterMeter(
     val last_check: String,
     val next_check: String,
     val status: String,
+    val replacement: String,
     val reading: String,
     val device_photo: String,
     val passport_photo: String,
@@ -108,10 +112,13 @@ data class MeterCatalogItem(
 data class AddNomenclatureRequest(
     val price_list_id: Long,
     val quantity: Int,
+    val total: String? = null,
 )
 
 data class AddMeterRequest(
     val device_kind: String,
+    val ipu_status: String = "Годен",
+    val replacement_done: Boolean = false,
     val meter_type: String = "",
     val serial_number: String = "",
     val registry_number: String = "",
@@ -156,6 +163,11 @@ data class CloseApplicationRequest(
     val payment_type: String,
     val cash_sum: Int = 0,
     val card_sum: Int = 0,
+)
+
+data class ReworkRequest(
+    val reason: String,
+    val comment: String,
 )
 
 data class OperationResult(val success: Boolean, val application_id: Long, val status: String)

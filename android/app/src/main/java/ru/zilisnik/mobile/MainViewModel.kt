@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import ru.zilisnik.mobile.data.ApplicationDetails
 import ru.zilisnik.mobile.data.ApplicationStatusCount
@@ -13,6 +15,7 @@ import ru.zilisnik.mobile.data.AddMeterRequest
 import ru.zilisnik.mobile.data.AddNomenclatureRequest
 import ru.zilisnik.mobile.data.CloseApplicationRequest
 import ru.zilisnik.mobile.data.PriceListItem
+import ru.zilisnik.mobile.data.ReworkRequest
 import ru.zilisnik.mobile.data.MeterCatalogItem
 import ru.zilisnik.mobile.data.MaterialUsageItem
 import ru.zilisnik.mobile.data.Repository
@@ -26,6 +29,8 @@ import java.util.Locale
 
 data class UiState(
     val loading: Boolean = false,
+    val loadingMessage: String = "",
+    val loadingProgress: Float = 0f,
     val authorized: Boolean = false,
     val applications: List<ApplicationSummary> = emptyList(),
     val todayStatusCounts: List<ApplicationStatusCount> = emptyList(),
@@ -45,21 +50,86 @@ data class UiState(
     val priceList: List<PriceListItem> = emptyList(),
     val meterCatalog: List<MeterCatalogItem> = emptyList(),
     val meterCatalogError: String? = null,
+    val reworkApplicationId: Long? = null,
+    val reworkReasons: List<String> = emptyList(),
+    val reworkError: String? = null,
 )
 
 class MainViewModel(private val repository: Repository = Repository()) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+    private var dashboardRefreshRunning = false
 
-    fun register(code: String, deviceName: String) = run {
-        repository.register(code, deviceName)
-        _state.value = _state.value.copy(
-            authorized = true,
-            profile = repository.profile(),
-        )
-        loadScheduleInternal(0)
-        loadDashboardInternal()
-        loadApplicationsInternal()
+    fun register(code: String, deviceName: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                loading = true, message = null,
+                loadingMessage = "Проверяем код регистрации…", loadingProgress = .1f,
+            )
+            try {
+                repository.register(code, deviceName)
+                _state.value = _state.value.copy(
+                    loadingMessage = "Загружаем профиль…", loadingProgress = .6f,
+                )
+                val profile = repository.profile()
+                _state.value = _state.value.copy(
+                    authorized = true,
+                    loading = false,
+                    loadingMessage = "",
+                    loadingProgress = 1f,
+                    profile = profile,
+                    message = "Вход выполнен. Данные обновляются в фоне…",
+                )
+                warmUpAfterLogin()
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    authorized = false,
+                    message = error.message ?: "Ошибка соединения",
+                    loading = false,
+                )
+            }
+        }
+    }
+
+    private fun warmUpAfterLogin() {
+        viewModelScope.launch {
+            val warnings = mutableListOf<String>()
+            coroutineScope {
+                val scheduleJob = async {
+                    runCatching { loadScheduleInternal(0) }
+                        .onFailure { warnings += "график временно недоступен" }
+                }
+                val dashboardJob = async {
+                    runCatching { loadDashboardInternal() }
+                        .onFailure { warnings += "статистика временно недоступна" }
+                }
+                val applicationsJob = async {
+                    runCatching { loadApplicationsInternal() }
+                        .onFailure { warnings += "список заявок временно недоступен" }
+                }
+                val pricesJob = async {
+                    runCatching { repository.priceList(refresh = true) }
+                        .onFailure { warnings += "прайс-лист временно недоступен" }
+                        .getOrDefault(emptyList())
+                }
+                val catalogJob = async {
+                    runCatching { repository.meterCatalog("", refresh = true) }
+                }
+
+                scheduleJob.await()
+                dashboardJob.await()
+                applicationsJob.await()
+                val prices = pricesJob.await()
+                val catalogResult = catalogJob.await()
+                _state.value = _state.value.copy(
+                    priceList = prices,
+                    meterCatalog = catalogResult.getOrDefault(emptyList()),
+                    meterCatalogError = catalogResult.exceptionOrNull()?.message,
+                    message = warnings.takeIf { it.isNotEmpty() }
+                        ?.joinToString(prefix = "Вход выполнен, но ", separator = ", "),
+                )
+            }
+        }
     }
 
     fun select(id: Long) = run {
@@ -70,26 +140,38 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
             nomenclatureError = null,
             photoLoadingKey = null,
             photoLoadError = null,
-            meterCatalog = emptyList(),
-            meterCatalogError = null,
         )
         loadNomenclature(id)
     }
 
     fun startCompletion(id: Long) = run {
-        val details = repository.application(id)
-        val nomenclature = repository.nomenclature(id)
-        var catalogError: String? = null
-        val catalog = try {
+        val snapshot = _state.value
+        val current = snapshot.selected?.takeIf { it.id == id }
+        val (details, nomenclature) = coroutineScope {
+            val detailsJob = async { current ?: repository.application(id) }
+            val nomenclatureJob = async {
+                if (current != null && !snapshot.nomenclatureLoading &&
+                    snapshot.nomenclatureError == null
+                ) current.nomenclature else repository.nomenclature(id)
+            }
+            detailsJob.await() to nomenclatureJob.await()
+        }
+        var catalogError = _state.value.meterCatalogError
+        val catalog = if (_state.value.meterCatalog.isNotEmpty()) {
+            _state.value.meterCatalog
+        } else try {
             repository.meterCatalog("")
         } catch (error: Exception) {
             catalogError = error.message ?: "Не удалось загрузить справочник ИПУ"
             emptyList()
         }
+        val prices = if (_state.value.priceList.isNotEmpty()) {
+            _state.value.priceList
+        } else repository.priceList()
         _state.value = _state.value.copy(
             selected = details.copy(nomenclature = nomenclature),
             completionWizard = true,
-            priceList = repository.priceList(),
+            priceList = prices,
             nomenclatureLoading = false,
             nomenclatureError = null,
             photoLoadingKey = null,
@@ -130,6 +212,11 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
         loadScheduleInternal(offset.coerceIn(0, 1))
     }
 
+    fun refreshSchedule() = run {
+        loadScheduleInternal(_state.value.scheduleMonthOffset, refresh = true)
+        _state.value = _state.value.copy(message = "График работы обновлён")
+    }
+
     fun back() {
         _state.value = _state.value.copy(
             selected = null,
@@ -139,9 +226,6 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
             photoLoadingKey = null,
             photoLoadError = null,
             completionWizard = false,
-            priceList = emptyList(),
-            meterCatalog = emptyList(),
-            meterCatalogError = null,
         )
     }
 
@@ -153,9 +237,6 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
         _state.value = _state.value.copy(
             selected = null,
             completionWizard = false,
-            priceList = emptyList(),
-            meterCatalog = emptyList(),
-            meterCatalogError = null,
             message = if (result.success) "Заявка выполнена" else "Заявка не выполнена",
         )
         loadDashboardInternal()
@@ -190,8 +271,8 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
         )
     }
 
-    fun addNomenclature(id: Long, priceListId: Long, quantity: Int) = run {
-        repository.addNomenclature(id, AddNomenclatureRequest(priceListId, quantity))
+    fun addNomenclature(id: Long, priceListId: Long, quantity: Int, total: String?) = run {
+        repository.addNomenclature(id, AddNomenclatureRequest(priceListId, quantity, total))
         val selected = _state.value.selected
         if (selected?.id == id) {
             _state.value = _state.value.copy(
@@ -299,18 +380,42 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
     }
 
     fun refreshDashboard() {
+        if (dashboardRefreshRunning) return
+        dashboardRefreshRunning = true
         viewModelScope.launch {
             try {
                 loadDashboardInternal()
             } catch (_: Exception) {
                 // A background refresh must not replace the current screen with an error.
+            } finally {
+                dashboardRefreshRunning = false
             }
         }
     }
 
-    fun sendToRework(id: Long) = run {
-        val result = repository.sendToRework(id)
+    fun prepareRework(id: Long) = run {
+        val reasons = repository.reworkReasons()
         _state.value = _state.value.copy(
+            reworkApplicationId = id,
+            reworkReasons = reasons,
+            reworkError = if (reasons.isEmpty()) "В поле причин нет доступных вариантов" else null,
+        )
+    }
+
+    fun cancelRework() {
+        _state.value = _state.value.copy(
+            reworkApplicationId = null,
+            reworkReasons = emptyList(),
+            reworkError = null,
+        )
+    }
+
+    fun sendToRework(id: Long, reason: String, comment: String) = run {
+        val result = repository.sendToRework(id, ReworkRequest(reason, comment))
+        _state.value = _state.value.copy(
+            reworkApplicationId = null,
+            reworkReasons = emptyList(),
+            reworkError = null,
             message = if (result.success) "Заявка отправлена на доработку" else "Статус не изменён",
         )
         loadDashboardInternal()
@@ -330,26 +435,22 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
         }
     }
 
-    private suspend fun loadDashboardInternal() {
+    private suspend fun loadDashboardInternal() = coroutineScope {
         val day = dateForOffset(0)
         val statuses = listOf("Новая", "Выполнено", "На Доработку")
-        val grouped = statuses.associateWith { status ->
-            repository.applications(status, day)
+        val applicationJobs = statuses.associateWith { status ->
+            async { repository.applications(status, day) }
         }
+        val grouped = applicationJobs.mapValues { (_, job) -> job.await() }
         _state.value = _state.value.copy(
             todayStatusCounts = statuses.map { status ->
                 ApplicationStatusCount(status, grouped[status].orEmpty().size)
             },
             todayApplications = statuses.flatMap { grouped[it].orEmpty() },
-            materialUsage = try {
-                repository.materialUsage(day)
-            } catch (_: Exception) {
-                _state.value.materialUsage
-            },
         )
     }
 
-    private suspend fun loadScheduleInternal(offset: Int) {
+    private suspend fun loadScheduleInternal(offset: Int, refresh: Boolean = false) {
         val calendar = Calendar.getInstance().apply {
             set(Calendar.DAY_OF_MONTH, 1)
             add(Calendar.MONTH, offset)
@@ -358,6 +459,7 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
             scheduleDays = repository.schedule(
                 calendar.get(Calendar.YEAR),
                 calendar.get(Calendar.MONTH) + 1,
+                refresh,
             ),
             scheduleMonthOffset = offset,
         )

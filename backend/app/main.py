@@ -20,6 +20,7 @@ from .models import (
     MaterialUsageItem,
     PhotoContent,
     PriceListItem,
+    ReworkRequest,
     RegisterRequest,
     ScheduleDay,
     TokenResponse,
@@ -92,13 +93,14 @@ async def profile(
 async def schedule(
     year: int,
     month: int,
+    refresh: bool = False,
     user: dict = Depends(current_user),
     crm: ClientBaseClient = Depends(get_client_base),
 ):
     if month < 1 or month > 12:
         raise HTTPException(status_code=422, detail="Некорректный месяц")
     try:
-        return await crm.employee_schedule(user["sub"], year, month)
+        return await crm.employee_schedule(user["sub"], year, month, refresh=refresh)
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -181,11 +183,12 @@ async def application_nomenclature(
 
 @app.get("/api/v1/price-list", response_model=list[PriceListItem])
 async def price_list(
+    refresh: bool = False,
     _: dict = Depends(current_user),
     crm: ClientBaseClient = Depends(get_client_base),
 ):
     try:
-        return await crm.price_list()
+        return await crm.price_list(force_refresh=refresh)
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -221,11 +224,12 @@ async def delete_application_nomenclature(
 @app.get("/api/v1/meter-catalog", response_model=list[MeterCatalogItem])
 async def meter_catalog(
     q: str = "",
+    refresh: bool = False,
     _: dict = Depends(current_user),
     crm: ClientBaseClient = Depends(get_client_base),
 ):
     try:
-        return await crm.meter_catalog(q)
+        return await crm.meter_catalog(q, force_refresh=refresh)
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -323,6 +327,7 @@ async def close_application(
 )
 async def send_application_to_rework(
     application_id: int,
+    command: ReworkRequest,
     idempotency_key: str = Header(min_length=16, max_length=100),
     _: dict = Depends(current_user),
     crm: ClientBaseClient = Depends(get_client_base),
@@ -331,7 +336,7 @@ async def send_application_to_rework(
     if operation_key in completed_operations:
         return completed_operations[operation_key]
     try:
-        await crm.send_to_rework(application_id)
+        await crm.send_to_rework(application_id, command.reason, command.comment)
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     result = OperationResult(
@@ -339,3 +344,14 @@ async def send_application_to_rework(
     )
     completed_operations[operation_key] = result
     return result
+
+
+@app.get("/api/v1/rework-reasons", response_model=list[str])
+async def rework_reasons(
+    _: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.rework_reasons()
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

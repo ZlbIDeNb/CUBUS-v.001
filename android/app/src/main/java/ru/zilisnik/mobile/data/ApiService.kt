@@ -35,6 +35,7 @@ interface ApiService {
         @Header("Authorization") authorization: String,
         @Query("year") year: Int,
         @Query("month") month: Int,
+        @Query("refresh") refresh: Boolean = false,
     ): List<ScheduleDay>
 
     @GET("api/v1/material-usage")
@@ -62,7 +63,13 @@ interface ApiService {
         @Header("Authorization") authorization: String,
         @Header("Idempotency-Key") idempotencyKey: String,
         @Path("id") id: Long,
+        @Body request: ReworkRequest,
     ): OperationResult
+
+    @GET("api/v1/rework-reasons")
+    suspend fun reworkReasons(
+        @Header("Authorization") authorization: String,
+    ): List<String>
 
     @POST("api/v1/applications/{id}/photos")
     suspend fun uploadPhoto(
@@ -88,6 +95,7 @@ interface ApiService {
     @GET("api/v1/price-list")
     suspend fun priceList(
         @Header("Authorization") authorization: String,
+        @Query("refresh") refresh: Boolean = false,
     ): List<PriceListItem>
 
     @POST("api/v1/applications/{id}/nomenclature")
@@ -108,6 +116,7 @@ interface ApiService {
     suspend fun meterCatalog(
         @Header("Authorization") authorization: String,
         @Query("q") query: String,
+        @Query("refresh") refresh: Boolean = false,
     ): List<MeterCatalogItem>
 
     @POST("api/v1/applications/{id}/meters")

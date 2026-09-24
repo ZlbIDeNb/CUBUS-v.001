@@ -34,6 +34,7 @@ class ApplicationSummary(BaseModel):
     delivery_time: str = ""
     status: str
     phone_number: str = ""
+    phone_number_2: str = ""
     barrier: str = ""
     comments: str = ""
 
@@ -47,6 +48,8 @@ class ScheduleDay(BaseModel):
     date: date
     day: int
     is_working: bool
+    has_record: bool = False
+    work_status: str = ""
 
 
 class MaterialUsageItem(BaseModel):
@@ -90,6 +93,7 @@ class WaterMeter(BaseModel):
     last_check: str = ""
     next_check: str = ""
     status: str = ""
+    replacement: str = ""
     reading: str = ""
     device_photo: str = ""
     passport_photo: str = ""
@@ -129,10 +133,13 @@ class MeterCatalogItem(BaseModel):
 class AddNomenclatureRequest(BaseModel):
     price_list_id: int
     quantity: int = Field(default=1, ge=1)
+    total: Decimal | None = Field(default=None, ge=0)
 
 
 class AddMeterRequest(BaseModel):
     device_kind: str
+    ipu_status: str = "Годен"
+    replacement_done: bool = False
     meter_type: str = ""
     serial_number: str = ""
     registry_number: str = ""
@@ -177,6 +184,11 @@ class CloseApplicationRequest(BaseModel):
         if self.payment_type in {PaymentType.CARD, PaymentType.MIXED}:
             result["card_sum"] = int(self.card_sum)
         return result
+
+
+class ReworkRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    comment: str = Field(min_length=1, max_length=4000)
 
 
 class OperationResult(BaseModel):

@@ -3,7 +3,12 @@ import base64
 import calendar
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import json
+import logging
+from pathlib import Path
 import re
+import sqlite3
+import time
 from typing import Any
 
 import httpx
@@ -45,6 +50,8 @@ APPLICATION_STATUSES = (
     "На Доработку",
 )
 
+logger = logging.getLogger("uvicorn.error")
+
 
 class ClientBaseError(RuntimeError):
     def __init__(self, message: str, status_code: int | None = None):
@@ -69,6 +76,43 @@ class ClientBaseClient:
             "X-Auth-Token": settings.client_base_token.get_secret_value(),
         }
         self.fields = fields
+        self.cache_path = Path(__file__).resolve().parent.parent / "client_base_cache.sqlite3"
+
+    def _cache_get(self, key: str) -> Any | None:
+        cache_path = getattr(self, "cache_path", None)
+        if cache_path is None:
+            return None
+        try:
+            with sqlite3.connect(cache_path) as connection:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires REAL NOT NULL)"
+                )
+                row = connection.execute(
+                    "SELECT payload, expires FROM cache WHERE key = ?", (key,)
+                ).fetchone()
+                if not row or float(row[1]) <= time.time():
+                    if row:
+                        connection.execute("DELETE FROM cache WHERE key = ?", (key,))
+                    return None
+                return json.loads(row[0])
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            return None
+
+    def _cache_set(self, key: str, payload: Any, ttl_seconds: int) -> None:
+        cache_path = getattr(self, "cache_path", None)
+        if cache_path is None:
+            return
+        try:
+            with sqlite3.connect(cache_path) as connection:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires REAL NOT NULL)"
+                )
+                connection.execute(
+                    "INSERT OR REPLACE INTO cache(key, payload, expires) VALUES (?, ?, ?)",
+                    (key, json.dumps(payload, ensure_ascii=False), time.time() + ttl_seconds),
+                )
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            pass
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
         headers = dict(self.headers)
@@ -120,7 +164,9 @@ class ClientBaseClient:
             "data130",
             filter_expression=f"and({','.join(conditions)})",
         )
-        applications = [await self._summary(item) for item in application_rows]
+        applications = list(
+            await asyncio.gather(*(self._summary(item) for item in application_rows))
+        )
         return sorted(
             applications,
             key=lambda item: (
@@ -205,7 +251,7 @@ class ClientBaseClient:
         )
 
     async def employee_schedule(
-        self, crm_login: str, year: int, month: int
+        self, crm_login: str, year: int, month: int, refresh: bool = False
     ) -> list[ScheduleDay]:
         row = await self._employee_row(crm_login)
         attrs = row.get("attributes", {}) if row else {}
@@ -240,22 +286,114 @@ class ClientBaseClient:
         result: list[ScheduleDay] = []
         for day_number in range(1, last_day + 1):
             current = date(year, month, day_number)
-            if explicit_dates:
-                working = current in explicit_dates
-            elif selected_weekdays:
-                working = current.weekday() in selected_weekdays
-            elif "2/2" in source or "2 через 2" in source:
-                working = ((current - date(2020, 1, 1)).days % 4) < 2
-            elif "6/1" in source:
-                working = current.weekday() < 6
-            else:
-                working = current.weekday() < 5
-            result.append(ScheduleDay(date=current, day=day_number, is_working=working))
+            # Do not paint an assumed Mon-Fri pattern as a real schedule.
+            # Days become green/red only when table 220 contains a record.
+            result.append(
+                ScheduleDay(
+                    date=current,
+                    day=day_number,
+                    is_working=False,
+                    has_record=False,
+                )
+            )
+        # Table 220 is the only authoritative source for per-day status.
+        try:
+            async with asyncio.timeout(12):
+                result = await self._overlay_schedule_from_table_220(
+                    row, result, year, month, refresh=refresh
+                )
+        except (ClientBaseError, KeyError, TypeError, ValueError, TimeoutError):
+            # A temporary ClientBase failure must not hide the whole calendar.
+            pass
         return result
+
+    async def _overlay_schedule_from_table_220(
+        self,
+        employee_row: dict | None,
+        result: list[ScheduleDay],
+        year: int,
+        month: int,
+        refresh: bool = False,
+    ) -> list[ScheduleDay]:
+        """Apply the exact table-220 fields used by ClientBase report 391."""
+        employee_record_id = (employee_row or {}).get("id")
+        if employee_record_id in (None, ""):
+            return result
+
+        employee_field = self.fields["schedule_employee"]
+        date_field = self.fields["schedule_date"]
+        status_field = self.fields["schedule_status"]
+        _, last_day = calendar.monthrange(year, month)
+        first = date(year, month, 1).isoformat()
+        last = date(year, month, last_day).isoformat()
+        cache_key = (
+            f"schedule220-record:{employee_record_id}:{year:04d}-{month:02d}"
+        )
+        schedule_rows = None if refresh else self._cache_get(cache_key)
+        if schedule_rows is None:
+            schedule_rows = await self._list_all(
+                "data220",
+                filter_expression=(
+                    f"and(eq(status,0),eq({employee_field},{employee_record_id}),"
+                    f"gte({date_field},'{first} 00:00:00'),"
+                    f"lte({date_field},'{last} 23:59:59'))"
+                ),
+            )
+            self._cache_set(cache_key, schedule_rows, 60)
+
+        overrides: dict[date, str] = {}
+        for schedule_row in schedule_rows:
+            values = schedule_row.get("attributes", {}) or {}
+            work_date = self._parse_schedule_date(values.get(date_field, ""))
+            if work_date is None:
+                continue
+            raw_status = str(values.get(status_field, "") or "").strip()
+            if raw_status in {"Работает", "Выходной", "Отпуск"}:
+                overrides[work_date] = raw_status
+
+        logger.info(
+            "Schedule table 220: employee_record=%s rows=%s matched_days=%s",
+            employee_record_id,
+            len(schedule_rows),
+            len(overrides),
+        )
+        return [
+            item.model_copy(
+                update={
+                    "is_working": overrides[item.date] == "Работает",
+                    "has_record": True,
+                    "work_status": overrides[item.date],
+                }
+            )
+            if item.date in overrides else item
+            for item in result
+        ]
+
+    @staticmethod
+    def _parse_schedule_date(value: Any) -> date | None:
+        raw = str(value or "").strip()
+        for pattern, order in (
+            (r"(\d{4})-(\d{2})-(\d{2})", "ymd"),
+            (r"(\d{2})\.(\d{2})\.(\d{4})", "dmy"),
+        ):
+            match = re.search(pattern, raw)
+            if not match:
+                continue
+            parts = tuple(map(int, match.groups()))
+            try:
+                return date(*parts) if order == "ymd" else date(parts[2], parts[1], parts[0])
+            except ValueError:
+                return None
+        return None
+
 
     async def material_usage(
         self, crm_login: str, work_date: date
     ) -> list[MaterialUsageItem]:
+        cache_key = f"material-usage:{crm_login}:{work_date.isoformat()}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return [MaterialUsageItem(**item) for item in cached]
         applications = await self.list_applications(crm_login, work_date=work_date)
         totals: dict[str, tuple[Decimal, Decimal]] = {}
         price_cache: dict[int, tuple[str, str]] = {}
@@ -295,10 +433,12 @@ class ClientBaseClient:
                     continue
                 old_quantity, old_total = totals.get(name, (Decimal("0"), Decimal("0")))
                 totals[name] = (old_quantity + quantity, old_total + total)
-        return [
+        result = [
             MaterialUsageItem(name=name, quantity=str(quantity), total=str(total))
             for name, (quantity, total) in sorted(totals.items(), key=lambda item: item[0].casefold())
         ]
+        self._cache_set(cache_key, [item.model_dump() for item in result], 60)
+        return result
 
     def _employee_equipment(self, attrs: dict[str, Any]) -> list[EmployeeEquipment]:
         def value(key: str) -> str:
@@ -394,9 +534,13 @@ class ClientBaseClient:
     async def nomenclature(self, application_id: int) -> list[NomenclatureItem]:
         return await self._nomenclature(application_id)
 
-    async def price_list(self) -> list[PriceListItem]:
+    async def price_list(self, force_refresh: bool = False) -> list[PriceListItem]:
+        cache_key = "catalog:price-list"
+        cached = None if force_refresh else self._cache_get(cache_key)
+        if cached is not None:
+            return [PriceListItem(**item) for item in cached]
         rows = await self._list_all("data91", filter_expression="eq(status,0)")
-        return [
+        result = [
             PriceListItem(
                 id=int(row["id"]),
                 name=str(
@@ -414,6 +558,8 @@ class ClientBaseClient:
             )
             for row in rows
         ]
+        self._cache_set(cache_key, [item.model_dump() for item in result], 21600)
+        return result
 
     async def add_nomenclature(
         self, application_id: int, command: AddNomenclatureRequest
@@ -422,10 +568,15 @@ class ClientBaseClient:
         attrs = (price_row.get("data", {}) or {}).get("attributes", {}) or {}
         name = str(attrs.get(self.fields["price_list_name"], "") or "")
         price = str(attrs.get(self.fields["price_list_price"], "0") or "0")
-        try:
-            total = str(float(price.replace(",", ".")) * command.quantity)
-        except ValueError:
-            total = "0"
+        if command.total is not None:
+            total_decimal = command.total
+            price = str(total_decimal / command.quantity)
+            total = str(total_decimal)
+        else:
+            try:
+                total = str(float(price.replace(" ", "").replace(",", ".")) * command.quantity)
+            except ValueError:
+                total = "0"
         await self._request(
             "POST",
             "data351",
@@ -456,11 +607,17 @@ class ClientBaseClient:
             raise ClientBaseError("Позиция не относится к этой заявке")
         await self._request("DELETE", f"data351/{nomenclature_id}")
 
-    async def meter_catalog(self, query: str = "") -> list[MeterCatalogItem]:
+    async def meter_catalog(
+        self, query: str = "", force_refresh: bool = False
+    ) -> list[MeterCatalogItem]:
         normalized_query = query.strip().casefold()
         registry_field = self.fields["meter_catalog_registry_number"]
         designation_field = self.fields["meter_catalog_designation"]
-        rows = await self._list_all("data940", filter_expression="eq(status,0)")
+        cache_key = "catalog:meters"
+        rows = None if force_refresh else self._cache_get(cache_key)
+        if rows is None:
+            rows = await self._list_all("data940", filter_expression="eq(status,0)")
+            self._cache_set(cache_key, rows, 21600)
         result: list[MeterCatalogItem] = []
         for row in rows:
             attrs = row.get("attributes", {}) or {}
@@ -553,6 +710,15 @@ class ClientBaseClient:
             clean = value.strip()
             return f"{clean} 00:00:00" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", clean) else clean
 
+        status = command.ipu_status if command.ipu_status in {"Новый", "Годен", "Не Годен"} else "Годен"
+        replacement = (
+            "Да" if status == "Годен"
+            else "Нет" if status == "Новый"
+            else "Нет" if command.replacement_done
+            else "Да"
+        )
+        last_check = "" if status == "Новый" else command.last_check
+        next_check = "" if status == "Не Годен" else command.next_check
         attrs: dict[str, Any] = {
             self.fields["meter_address_id"]: application_attrs.get(self.fields["address_id"], ""),
             self.fields["meter_client_id"]: application_attrs.get(self.fields["client_id"], ""),
@@ -562,10 +728,13 @@ class ClientBaseClient:
             self.fields["meter_serial_number"]: command.serial_number,
             self.fields["meter_registry_number"]: command.registry_number,
             self.fields["meter_year"]: command.year,
-            self.fields["meter_last_check"]: crm_date(command.last_check),
-            self.fields["meter_next_check"]: crm_date(command.next_check),
-            self.fields["meter_status"]: "Годен",
+            self.fields["meter_last_check"]: crm_date(last_check),
+            self.fields["meter_next_check"]: crm_date(next_check),
+            self.fields["meter_status"]: status,
         }
+        replacement_field = self.fields.get("meter_replacement")
+        if replacement_field:
+            attrs[replacement_field] = replacement
         if command.device_photo_base64:
             attrs[self.fields["meter_device_photo"]] = [{
                 "file_name": command.device_photo_filename,
@@ -591,9 +760,14 @@ class ClientBaseClient:
             serial_number=command.serial_number,
             registry_number=command.registry_number,
             year=command.year,
-            last_check=command.last_check,
-            next_check=command.next_check,
-            status="Годен",
+            last_check="" if command.ipu_status == "Новый" else command.last_check,
+            next_check="" if command.ipu_status == "Не Годен" else command.next_check,
+            status=command.ipu_status,
+            replacement=(
+                "Да" if command.ipu_status == "Годен"
+                else "Нет" if command.ipu_status == "Новый" or command.replacement_done
+                else "Да"
+            ),
             device_photo=command.device_photo_filename,
             passport_photo=command.passport_photo_filename,
         )
@@ -679,7 +853,9 @@ class ClientBaseClient:
         metadata: dict = {}
         if not relation_field:
             try:
-                metadata = await self._request("GET", "table/351")
+                metadata = await self._request(
+                    "GET", "table/351", params={"include": "fields"}
+                )
             except ClientBaseError:
                 metadata = {}
             relation_field = self._find_field_id(metadata, ("заяв",))
@@ -920,6 +1096,9 @@ class ClientBaseClient:
                     last_check=str(attrs.get(self.fields["meter_last_check"], "") or ""),
                     next_check=str(attrs.get(self.fields["meter_next_check"], "") or ""),
                     status=str(attrs.get(self.fields["meter_status"], "") or ""),
+                    replacement=str(
+                        attrs.get(self.fields.get("meter_replacement", ""), "") or ""
+                    ),
                     reading=str(attrs.get(self.fields["meter_reading"], "") or ""),
                     device_photo=str(
                         attrs.get(self.fields["meter_device_photo"], "") or ""
@@ -949,27 +1128,113 @@ class ClientBaseClient:
         }
         await self._request("PATCH", f"data130/{application_id}", json=body)
 
-    async def send_to_rework(self, application_id: int) -> None:
+    async def rework_reasons(self) -> list[str]:
+        metadata = await self._request(
+            "GET", "table/130", params={"include": "fields"}
+        )
+        field_id = self.fields["rework_reason"]
+        field_metadata = self._find_metadata_by_id(metadata, field_id)
+        return self._extract_choice_labels(field_metadata)
+
+    async def send_to_rework(
+        self, application_id: int, reason: str, comment: str
+    ) -> None:
         body = {
             "data": {
                 "type": "data130",
                 "id": str(application_id),
-                "attributes": {self.fields["status"]: "На Доработку"},
+                "attributes": {
+                    self.fields["rework_call_date"]: date.today().isoformat(),
+                    self.fields["rework_reason"]: reason,
+                    self.fields["metrolog_comments"]: comment,
+                    self.fields["status"]: "На Доработку",
+                },
             }
         }
         await self._request("PATCH", f"data130/{application_id}", json=body)
 
+    @staticmethod
+    def _find_metadata_by_id(value: Any, field_id: str) -> dict[str, Any]:
+        numeric_id = field_id.removeprefix("f")
+        if isinstance(value, dict):
+            raw_id = str(value.get("id", ""))
+            if raw_id in {field_id, numeric_id} or field_id in value:
+                return value
+            for nested in value.values():
+                found = ClientBaseClient._find_metadata_by_id(nested, field_id)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for nested in value:
+                found = ClientBaseClient._find_metadata_by_id(nested, field_id)
+                if found:
+                    return found
+        return {}
+
+    @staticmethod
+    def _extract_choice_labels(field_metadata: dict[str, Any]) -> list[str]:
+        container_names = {
+            "choices", "enum", "items", "list", "options", "select", "values",
+            "variants",
+        }
+        label_names = {"label", "name", "text", "title", "value"}
+        labels: list[str] = []
+
+        def add(raw: Any) -> None:
+            value = str(raw or "").strip()
+            if value and not re.fullmatch(r"f?\d+", value) and value not in labels:
+                labels.append(value)
+
+        def walk(value: Any, inside_choices: bool = False) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        label = next(
+                            (
+                                item[key]
+                                for key in label_names
+                                if key in item and isinstance(item[key], (str, int, float))
+                            ),
+                            None,
+                        )
+                        if inside_choices and label is not None:
+                            add(label)
+                        else:
+                            walk(item, inside_choices)
+                    elif inside_choices:
+                        add(item)
+            elif isinstance(value, dict):
+                for key, nested in value.items():
+                    walk(nested, inside_choices or key.casefold() in container_names)
+            elif inside_choices and isinstance(value, str):
+                parsed = None
+                if value[:1] in "[{":
+                    try:
+                        parsed = json.loads(value)
+                    except ValueError:
+                        parsed = None
+                if parsed is not None:
+                    walk(parsed, True)
+                else:
+                    for item in re.split(r"[\r\n;]+", value):
+                        add(item)
+
+        walk(field_metadata)
+        return labels
+
     async def _summary(self, item: dict) -> ApplicationSummary:
         attrs = item["attributes"]
-        address = await self._related_value(
-            "data470",
-            attrs.get(self.fields["address_id"]),
-            self.fields["address_value"],
-        )
-        client = await self._related_value(
-            "data42",
-            attrs.get(self.fields["client_id"]),
-            self.fields["client_value"],
+        address, client = await asyncio.gather(
+            self._related_value(
+                "data470",
+                attrs.get(self.fields["address_id"]),
+                self.fields["address_value"],
+            ),
+            self._related_value(
+                "data42",
+                attrs.get(self.fields["client_id"]),
+                self.fields["client_value"],
+            ),
         )
         return ApplicationSummary(
             id=int(item["id"]),
@@ -983,6 +1248,9 @@ class ClientBaseClient:
             phone_number=str(
                 attrs.get(self.fields["phone_number"], "") or ""
             ),
+            phone_number_2=str(
+                attrs.get(self.fields["phone_number_2"], "") or ""
+            ),
             barrier=str(attrs.get(self.fields["barrier"], "") or ""),
             comments=str(attrs.get(self.fields["comments"], "") or ""),
         )
@@ -990,5 +1258,11 @@ class ClientBaseClient:
     async def _related_value(self, table: str, row_id: Any, field: str) -> str:
         if row_id in (None, ""):
             return ""
+        cache_key = f"related:{table}:{row_id}:{field}"
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, str):
+            return cached
         payload = await self._request("GET", f"{table}/{row_id}")
-        return str(payload.get("data", {}).get("attributes", {}).get(field, "") or "")
+        value = str(payload.get("data", {}).get("attributes", {}).get(field, "") or "")
+        self._cache_set(cache_key, value, 21600)
+        return value

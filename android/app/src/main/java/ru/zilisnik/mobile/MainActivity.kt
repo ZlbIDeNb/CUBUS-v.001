@@ -43,6 +43,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DatePicker
@@ -91,7 +92,6 @@ import ru.zilisnik.mobile.data.ApplicationSummary
 import ru.zilisnik.mobile.data.AddMeterRequest
 import ru.zilisnik.mobile.data.PriceListItem
 import ru.zilisnik.mobile.data.MeterCatalogItem
-import ru.zilisnik.mobile.data.MaterialUsageItem
 import ru.zilisnik.mobile.data.UserProfile
 import ru.zilisnik.mobile.data.ScheduleDay
 import ru.zilisnik.mobile.data.WaterMeter
@@ -134,16 +134,28 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 state.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-                if (state.loading) CircularProgressIndicator() else RegistrationScreen(vm::register)
+                if (state.loading) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CircularProgressIndicator(progress = { state.loadingProgress })
+                        Text(state.loadingMessage, textAlign = TextAlign.Center)
+                        Text("${(state.loadingProgress * 100).roundToInt()} %")
+                    }
+                } else RegistrationScreen(vm::register)
             }
         }
         return
     }
 
-    LaunchedEffect(section, state.authorized) {
-        while (section == AppSection.MAIN && state.authorized) {
-            vm.refreshDashboard()
-            delay(15_000)
+    LaunchedEffect(section, state.authorized, state.selected?.id) {
+        while (section == AppSection.MAIN && state.authorized && state.selected == null) {
+            delay(60_000)
+            if (section == AppSection.MAIN && state.selected == null) {
+                vm.refreshDashboard()
+            }
         }
     }
 
@@ -176,7 +188,10 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                                 AppSection.MAIN -> "Основной экран"
                                 AppSection.PROFILE -> "Личный кабинет"
                                 AppSection.APPLICATIONS -> "Заявки"
-                            }
+                            },
+                            style = MaterialTheme.typography.headlineSmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     },
                     navigationIcon = {
@@ -228,6 +243,7 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         details = state.selected!!,
                         onBack = vm::back,
                         onComplete = vm::startCompletion,
+                        onRework = vm::prepareRework,
                         onUploadPhoto = vm::uploadPhoto,
                         onDeletePhoto = vm::deletePhoto,
                         onLoadPhoto = vm::loadPhoto,
@@ -236,19 +252,23 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         photoLoadingKey = state.photoLoadingKey,
                         photoLoadError = state.photoLoadError,
                     )
-                    state.loading -> CircularProgressIndicator()
+                    state.loading -> Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) { CircularProgressIndicator() }
                     section == AppSection.MAIN -> MainScreen(
                         state.profile,
                         state.todayStatusCounts,
                         state.todayApplications,
-                        state.materialUsage,
                         vm::select,
+                        vm::refreshDashboard,
                     )
                     section == AppSection.PROFILE -> ProfileScreen(
                         state.profile,
                         state.scheduleDays,
                         state.scheduleMonthOffset,
                         vm::selectScheduleMonth,
+                        vm::refreshSchedule,
                     )
                     else -> ApplicationsScreen(
                         applications = state.applications,
@@ -256,11 +276,20 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         onDaySelect = vm::selectApplicationDay,
                         onOpen = vm::select,
                         onComplete = vm::startCompletion,
-                        onRework = vm::sendToRework,
+                        onRework = vm::prepareRework,
                     )
                 }
             }
         }
+    }
+    state.reworkApplicationId?.let { applicationId ->
+        ReworkDialog(
+            applicationId = applicationId,
+            reasons = state.reworkReasons,
+            error = state.reworkError,
+            onDismiss = vm::cancelRework,
+            onConfirm = vm::sendToRework,
+        )
     }
 }
 
@@ -282,7 +311,7 @@ private fun DrawerItem(
 private fun RegistrationScreen(onRegister: (String, String) -> Unit) {
     var code by remember { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Регистрация устройства", style = MaterialTheme.typography.headlineSmall)
+        AppHeading("Регистрация устройства")
         OutlinedTextField(code, { code = it }, label = { Text("Код регистрации") })
         Button(
             enabled = code.length >= 4,
@@ -296,8 +325,8 @@ private fun ColumnScope.MainScreen(
     profile: UserProfile?,
     statusCounts: List<ApplicationStatusCount>,
     applications: List<ApplicationSummary>,
-    materialUsage: List<MaterialUsageItem>,
     onOpen: (Long) -> Unit,
+    onRefresh: () -> Unit,
 ) {
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) {
@@ -311,12 +340,9 @@ private fun ColumnScope.MainScreen(
         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            profile?.full_name?.ifBlank { profile.login } ?: "Метролог",
-            style = MaterialTheme.typography.headlineSmall,
-        )
+        AppHeading(profile?.full_name?.ifBlank { profile.login } ?: "Метролог")
         Text(formatter.format(now), style = MaterialTheme.typography.titleLarge)
-        Text("Статистика на сегодня", style = MaterialTheme.typography.headlineSmall)
+        AppHeading("Статистика на сегодня")
         StatusCard(
             "Новые",
             statusCounts.countFor("Новая"),
@@ -335,7 +361,9 @@ private fun ColumnScope.MainScreen(
             applications.filter { it.status == "На Доработку" },
             onOpen,
         )
-        MaterialUsageCard(materialUsage)
+        Button(modifier = Modifier.fillMaxWidth(), onClick = onRefresh) {
+            Text("Обновить список заявок")
+        }
     }
 }
 
@@ -361,7 +389,7 @@ private fun StatusCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
-                Text("$count  ${if (expanded) "▲" else "▼"}", style = MaterialTheme.typography.titleLarge)
+                Text("$count  ${if (expanded) "▲" else "▼"}", style = MaterialTheme.typography.titleMedium)
             }
             if (expanded) {
                 if (applications.isEmpty()) {
@@ -369,8 +397,7 @@ private fun StatusCard(
                 }
                 applications.sortedWith(applicationDeliveryComparator()).forEachIndexed { index, item ->
                     Text(
-                        "${index + 1}. № ${item.number}" +
-                            item.delivery_time.takeIf(String::isNotBlank)?.let { " — $it" }.orEmpty(),
+                        "${index + 1}. № ${item.number}",
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -389,49 +416,26 @@ private fun applicationDeliveryComparator(): Comparator<ApplicationSummary> =
         .thenBy { it.number }
 
 @Composable
-private fun MaterialUsageCard(items: List<MaterialUsageItem>) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    Card(Modifier.fillMaxWidth()) {
-        Column {
-            Row(
-                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Затраченный материал", style = MaterialTheme.typography.titleMedium)
-                Text("${items.size}  ${if (expanded) "▲" else "▼"}")
-            }
-            if (expanded) {
-                if (items.isEmpty()) {
-                    Text("Товары сегодня не списывались", modifier = Modifier.padding(16.dp))
-                }
-                items.forEachIndexed { index, item ->
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        Text("${index + 1}. ${item.name}", style = MaterialTheme.typography.labelLarge)
-                        Text("Количество: ${item.quantity}   Сумма: ${item.total}")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun ColumnScope.ProfileScreen(
     profile: UserProfile?,
     scheduleDays: List<ScheduleDay>,
     scheduleMonthOffset: Int,
     onMonthSelect: (Int) -> Unit,
+    onRefreshSchedule: () -> Unit,
 ) {
     val context = LocalContext.current
     Column(
         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Профиль метролога", style = MaterialTheme.typography.headlineSmall)
+        AppHeading("Профиль метролога")
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ProfileLine("ФИО", profile?.full_name)
+                Text("ФИО", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    profile?.full_name?.ifBlank { "—" } ?: "—",
+                    style = MaterialTheme.typography.titleLarge,
+                )
                 ProfileLine("Должность", profile?.position)
                 ProfileLine("Контактный телефон", profile?.phone)
                 ProfileLine("График работы", profile?.work_schedule)
@@ -439,8 +443,12 @@ private fun ColumnScope.ProfileScreen(
                 ProfileLine("Номер Папки", profile?.folder_number)
             }
         }
+        AppHeading("График работы")
         WorkScheduleCalendar(scheduleDays, scheduleMonthOffset, onMonthSelect)
-        Text("Оборудование у метролога", style = MaterialTheme.typography.headlineSmall)
+        Button(modifier = Modifier.fillMaxWidth(), onClick = onRefreshSchedule) {
+            Text("Обновить график работы")
+        }
+        AppHeading("Оборудование у метролога")
         profile?.equipment.orEmpty().forEach { equipment ->
             CollapsibleSection(
                 title = equipment.category,
@@ -493,7 +501,6 @@ private fun WorkScheduleCalendar(
     val cells: List<ScheduleDay?> = List(firstWeekday) { null } + days
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("График работы", style = MaterialTheme.typography.titleLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = monthOffset == 0,
@@ -527,6 +534,8 @@ private fun WorkScheduleCalendar(
                                 .background(
                                     when {
                                         day == null -> Color.Transparent
+                                        !day.has_record -> Color(0xFFE0E0E0)
+                                        day.work_status == "Отпуск" -> Color(0xFFFFF59D)
                                         day.is_working -> Color(0xFFC8E6C9)
                                         else -> Color(0xFFFFCDD2)
                                     },
@@ -542,6 +551,8 @@ private fun WorkScheduleCalendar(
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("■ Рабочий", color = Color(0xFF2E7D32))
                 Text("■ Выходной", color = Color(0xFFC62828))
+                Text("■ Отпуск", color = Color(0xFFF9A825))
+                Text("■ Нет записи", color = Color(0xFF757575))
             }
         }
     }
@@ -554,6 +565,68 @@ private fun ProfileLine(title: String, value: String?) {
 }
 
 @Composable
+private fun ReworkDialog(
+    applicationId: Long,
+    reasons: List<String>,
+    error: String?,
+    onDismiss: () -> Unit,
+    onConfirm: (Long, String, String) -> Unit,
+) {
+    var selectedReason by remember(applicationId) { mutableStateOf("") }
+    var comment by remember(applicationId) { mutableStateOf("") }
+    var reasonMenu by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Передать на доработку") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Дата звонка будет установлена автоматически: сегодня")
+                Box(Modifier.fillMaxWidth()) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = reasons.isNotEmpty(),
+                        onClick = { reasonMenu = true },
+                    ) {
+                        Text(selectedReason.ifBlank { "Выбрать причину" })
+                    }
+                    DropdownMenu(
+                        expanded = reasonMenu,
+                        onDismissRequest = { reasonMenu = false },
+                    ) {
+                        reasons.forEach { reason ->
+                            DropdownMenuItem(
+                                text = { Text(reason) },
+                                onClick = {
+                                    selectedReason = reason
+                                    reasonMenu = false
+                                },
+                            )
+                        }
+                    }
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                OutlinedTextField(
+                    value = comment,
+                    onValueChange = { comment = it },
+                    label = { Text("Комментарий метролога") },
+                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = selectedReason.isNotBlank() && comment.isNotBlank(),
+                onClick = { onConfirm(applicationId, selectedReason, comment.trim()) },
+            ) { Text("Передать") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        },
+    )
+}
+
+@Composable
 private fun ColumnScope.ApplicationsScreen(
     applications: List<ApplicationSummary>,
     selectedDayOffset: Int,
@@ -562,7 +635,7 @@ private fun ColumnScope.ApplicationsScreen(
     onComplete: (Long) -> Unit,
     onRework: (Long) -> Unit,
 ) {
-    Text("Новые заявки", style = MaterialTheme.typography.headlineSmall)
+    AppHeading("Новые заявки")
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -602,52 +675,50 @@ private fun ApplicationCard(
     onComplete: (Long) -> Unit,
     onRework: (Long) -> Unit,
 ) {
-    var menuExpanded by remember(item.id) { mutableStateOf(false) }
     val context = LocalContext.current
     Card(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().padding(16.dp)) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                "$position. Заявка № ${item.number}",
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("$position. № ${item.number}", style = MaterialTheme.typography.titleMedium)
-                InformationLine("Время доставки", item.delivery_time)
-                InformationLine("ФИО клиента", item.client)
-                ActionInformationLine("Адрес", item.address) {
-                    openNavigator(context, item.address)
-                }
-                InformationLine("Интервал", item.interval)
-                ActionInformationLine("Телефон", item.phone_number) {
-                    openDialer(context, item.phone_number)
-                }
-                InformationLine("Шлагбаум", item.barrier)
-                InformationLine("Комментарии", item.comments)
+                CompactInformationLine("Дата выезда", item.work_date.orEmpty(), Modifier.weight(1f))
+                CompactInformationLine("Интервал", item.interval, Modifier.weight(1f))
             }
-            Box {
-                Button(onClick = { menuExpanded = true }) { Text("▼") }
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false },
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Открыть заявку") },
-                        onClick = { menuExpanded = false; onOpen(item.id) },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Завершить заявку") },
-                        onClick = {
-                            menuExpanded = false
-                            onComplete(item.id)
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Передать на доработку") },
-                        onClick = {
-                            menuExpanded = false
-                            onRework(item.id)
-                        },
-                    )
-                }
+            InlineInformationLine("ФИО клиента", item.client)
+            InlineActionInformationLine("Адрес", item.address) {
+                openNavigator(context, item.address)
+            }
+            InlineInformationLine("Шлагбаум", item.barrier)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CompactActionInformationLine(
+                    "Телефон", item.phone_number, Modifier.weight(1f)
+                ) { openDialer(context, item.phone_number) }
+                CompactActionInformationLine(
+                    "Телефон 2", item.phone_number_2, Modifier.weight(1f)
+                ) { openDialer(context, item.phone_number_2) }
+            }
+            InlineInformationLine("Комментарий", item.comments)
+            Button(modifier = Modifier.fillMaxWidth(), onClick = { onOpen(item.id) }) {
+                Text("Открыть заявку")
+            }
+            Button(modifier = Modifier.fillMaxWidth(), onClick = { onComplete(item.id) }) {
+                Text("Завершить заявку")
+            }
+            Button(modifier = Modifier.fillMaxWidth(), onClick = { onRework(item.id) }) {
+                Text("Передать на доработку")
             }
         }
     }
@@ -661,7 +732,7 @@ private fun ColumnScope.CompletionWizardScreen(
     meterCatalogError: String?,
     onBack: () -> Unit,
     onUploadPhoto: (Long, String, String, String) -> Unit,
-    onAddNomenclature: (Long, Long, Int) -> Unit,
+    onAddNomenclature: (Long, Long, Int, String?) -> Unit,
     onDeleteNomenclature: (Long, Long) -> Unit,
     onAddMeter: (Long, AddMeterRequest, (WaterMeter) -> Unit) -> Unit,
     onUpdateMeter: (Long, Long, AddMeterRequest, (WaterMeter) -> Unit) -> Unit,
@@ -672,6 +743,8 @@ private fun ColumnScope.CompletionWizardScreen(
     var photoIndex by rememberSaveable(details.id) { mutableStateOf(0) }
     var selectedPriceId by rememberSaveable(details.id) { mutableStateOf<Long?>(null) }
     var quantity by rememberSaveable(details.id) { mutableStateOf("1") }
+    var usePriceListAmount by rememberSaveable(details.id) { mutableStateOf(true) }
+    var customAmount by rememberSaveable(details.id) { mutableStateOf("") }
     var waterKind by rememberSaveable(details.id) { mutableStateOf("ИПУ ХВС") }
     var meterType by rememberSaveable(details.id) { mutableStateOf("") }
     var serialNumber by rememberSaveable(details.id) { mutableStateOf("") }
@@ -679,6 +752,10 @@ private fun ColumnScope.CompletionWizardScreen(
     var meterYear by rememberSaveable(details.id) { mutableStateOf("") }
     var lastCheck by rememberSaveable(details.id) { mutableStateOf("") }
     var nextCheck by rememberSaveable(details.id) { mutableStateOf("") }
+    var ipuStatus by rememberSaveable(details.id) { mutableStateOf("Годен") }
+    var replacementDone by rememberSaveable(details.id) { mutableStateOf(false) }
+    var mpiYears by rememberSaveable(details.id) { mutableStateOf(4) }
+    var statusMenu by remember { mutableStateOf(false) }
     var sessionMeterIds by rememberSaveable(details.id) { mutableStateOf(emptyList<Long>()) }
     var editingMeterId by rememberSaveable(details.id) { mutableStateOf<Long?>(null) }
     var devicePhotoName by rememberSaveable(details.id) { mutableStateOf("") }
@@ -727,6 +804,11 @@ private fun ColumnScope.CompletionWizardScreen(
         }
     }
     val selectedPrice = priceList.firstOrNull { it.id == selectedPriceId }
+    val calculatedAmount = ((selectedPrice?.price
+        ?.replace(" ", "")?.replace(",", ".")?.toDoubleOrNull() ?: 0.0) *
+        (quantity.toIntOrNull() ?: 0)).let { value ->
+        if (value % 1.0 == 0.0) value.toLong().toString() else "%.2f".format(Locale.US, value)
+    }
     val nomenclatureTotal = details.nomenclature.sumOf { item ->
         item.total.replace(" ", "").replace(",", ".").toDoubleOrNull() ?: 0.0
     }.roundToInt()
@@ -740,6 +822,14 @@ private fun ColumnScope.CompletionWizardScreen(
         }
     }
 
+    LaunchedEffect(ipuStatus, lastCheck, mpiYears) {
+        if (ipuStatus == "Годен" && lastCheck.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) {
+            nextCheck = calculateNextVerification(lastCheck, mpiYears)
+        }
+        if (ipuStatus == "Новый") lastCheck = ""
+        if (ipuStatus == "Не Годен") nextCheck = ""
+    }
+
     fun clearMeterForm() {
         editingMeterId = null
         meterType = ""
@@ -748,6 +838,9 @@ private fun ColumnScope.CompletionWizardScreen(
         meterYear = ""
         lastCheck = ""
         nextCheck = ""
+        ipuStatus = "Годен"
+        replacementDone = false
+        mpiYears = 4
         devicePhotoName = ""
         devicePhotoBase64 = ""
         passportPhotoName = ""
@@ -763,6 +856,8 @@ private fun ColumnScope.CompletionWizardScreen(
         meterYear = meter.year
         lastCheck = meter.last_check.substringBefore(" ")
         nextCheck = meter.next_check.substringBefore(" ")
+        ipuStatus = meter.status.ifBlank { "Годен" }
+        replacementDone = meter.status == "Не Годен" && meter.replacement == "Нет"
         devicePhotoName = meter.device_photo
         devicePhotoBase64 = ""
         passportPhotoName = meter.passport_photo
@@ -771,6 +866,8 @@ private fun ColumnScope.CompletionWizardScreen(
 
     fun meterRequest() = AddMeterRequest(
         device_kind = waterKind,
+        ipu_status = ipuStatus,
+        replacement_done = replacementDone,
         meter_type = meterType,
         serial_number = serialNumber,
         registry_number = registryNumber,
@@ -787,15 +884,11 @@ private fun ColumnScope.CompletionWizardScreen(
         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            "Завершение заявки: шаг ${step + 1} из 5",
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        AppHeading("Завершение заявки: шаг ${step + 1} из 5")
         when (step) {
             0 -> {
                 val photosOfType = details.photos.filter { it.field == currentPhotoType.first }
+                AppHeading(currentPhotoType.second)
                 Card(Modifier.fillMaxWidth()) {
                     Column(
                         Modifier.padding(16.dp),
@@ -805,24 +898,37 @@ private fun ColumnScope.CompletionWizardScreen(
                             "Фотографии ${photoIndex + 1} из ${photoTypes.size}",
                             style = MaterialTheme.typography.labelLarge,
                         )
-                        Text(currentPhotoType.second, style = MaterialTheme.typography.titleLarge)
                         if (photosOfType.isEmpty()) {
                             Text("Фотография ещё не добавлена")
                         } else {
                             photosOfType.forEach { Text("✓ ${it.filename}") }
                         }
-                        Button(onClick = { photoPicker.launch("image/*") }) {
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { photoPicker.launch("image/*") },
+                        ) {
                             Text("Добавить фотографию")
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             if (photoIndex > 0) {
-                                TextButton(onClick = { photoIndex-- }) { Text("Назад") }
+                                TextButton(
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { photoIndex-- },
+                                ) { Text("Назад") }
                             } else {
-                                TextButton(onClick = onBack) { Text("Отмена") }
+                                TextButton(modifier = Modifier.weight(1f), onClick = onBack) {
+                                    Text("Отмена")
+                                }
                             }
-                            Button(onClick = {
-                                if (photoIndex < photoTypes.lastIndex) photoIndex++ else step = 1
-                            }) {
+                            Button(
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    if (photoIndex < photoTypes.lastIndex) photoIndex++ else step = 1
+                                },
+                            ) {
                                 Text(if (photosOfType.isEmpty()) "Пропустить" else "Продолжить")
                             }
                         }
@@ -831,7 +937,7 @@ private fun ColumnScope.CompletionWizardScreen(
             }
 
             1 -> {
-                Text("Номенклатура", style = MaterialTheme.typography.titleLarge)
+                AppHeading("Номенклатура")
                 if (details.nomenclature.isEmpty()) Text("Позиции пока не добавлены")
                 details.nomenclature.forEach { item ->
                     Card(Modifier.fillMaxWidth()) {
@@ -865,10 +971,41 @@ private fun ColumnScope.CompletionWizardScreen(
                     label = { Text("Количество") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Checkbox(
+                        checked = usePriceListAmount,
+                        onCheckedChange = {
+                            usePriceListAmount = it
+                            if (it) customAmount = calculatedAmount
+                        },
+                    )
+                    Text("Стоимость по прайс-листу")
+                }
+                OutlinedTextField(
+                    value = if (usePriceListAmount) calculatedAmount else customAmount,
+                    onValueChange = { value ->
+                        if (!usePriceListAmount) {
+                            customAmount = value.filter { it.isDigit() || it == '.' || it == ',' }
+                        }
+                    },
+                    readOnly = usePriceListAmount,
+                    label = { Text("Сумма выбранной позиции") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Button(
-                    enabled = selectedPriceId != null && (quantity.toIntOrNull() ?: 0) > 0,
+                    enabled = selectedPriceId != null && (quantity.toIntOrNull() ?: 0) > 0 &&
+                        (if (usePriceListAmount) calculatedAmount else customAmount)
+                            .replace(',', '.').toDoubleOrNull() != null,
                     onClick = {
-                        onAddNomenclature(details.id, selectedPriceId!!, quantity.toInt())
+                        onAddNomenclature(
+                            details.id,
+                            selectedPriceId!!,
+                            quantity.toInt(),
+                            if (usePriceListAmount) calculatedAmount else customAmount.replace(',', '.'),
+                        )
                     },
                 ) { Text("Добавить номенклатуру") }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -878,7 +1015,7 @@ private fun ColumnScope.CompletionWizardScreen(
             }
 
             2 -> {
-                Text("Добавление ИПУ", style = MaterialTheme.typography.titleLarge)
+                AppHeading("Добавление ИПУ")
                 Text(
                     "Поиск в справочнике по номеру в госреестре или обозначению типа СИ",
                     style = MaterialTheme.typography.labelLarge,
@@ -959,8 +1096,54 @@ private fun ColumnScope.CompletionWizardScreen(
                 WizardField("Серийный номер", serialNumber) { serialNumber = it }
                 WizardField("Номер в госреестре", registryNumber) { registryNumber = it }
                 WizardField("Год выпуска", meterYear) { meterYear = it }
-                WizardDateField("Дата последней поверки", lastCheck) { lastCheck = it }
-                WizardDateField("Дата очередной поверки", nextCheck) { nextCheck = it }
+                Text("Статус ИПУ", style = MaterialTheme.typography.labelLarge)
+                Box {
+                    Button(onClick = { statusMenu = true }) { Text(ipuStatus) }
+                    DropdownMenu(statusMenu, { statusMenu = false }) {
+                        listOf("Новый", "Годен", "Не Годен").forEach { status ->
+                            DropdownMenuItem(
+                                text = { Text(status) },
+                                onClick = {
+                                    ipuStatus = status
+                                    statusMenu = false
+                                    replacementDone = false
+                                },
+                            )
+                        }
+                    }
+                }
+                when (ipuStatus) {
+                    "Новый" -> {
+                        WizardDateField("Дата очередной поверки", nextCheck) { nextCheck = it }
+                    }
+                    "Годен" -> {
+                        VerificationDateWithToday("Дата последней поверки", lastCheck) { lastCheck = it }
+                        Text("Межповерочный интервал", style = MaterialTheme.typography.labelLarge)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(4, 5, 6).forEach { years ->
+                                FilterChip(
+                                    selected = mpiYears == years,
+                                    onClick = { mpiYears = years },
+                                    label = { Text("$years лет") },
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = nextCheck,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Дата очередной поверки") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    else -> {
+                        VerificationDateWithToday("Дата последней поверки", lastCheck) { lastCheck = it }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(replacementDone, { replacementDone = it })
+                            Text("Была замена прибора")
+                        }
+                    }
+                }
                 Text("Фото прибора обязательно", style = MaterialTheme.typography.labelLarge)
                 Button(onClick = { devicePhotoPicker.launch("image/*") }) {
                     Text(if (devicePhotoName.isBlank()) "Добавить фото прибора *" else "Фото: $devicePhotoName")
@@ -970,8 +1153,14 @@ private fun ColumnScope.CompletionWizardScreen(
                 }
                 val requiredPhotoReady = devicePhotoName.isNotBlank() &&
                     (editingMeterId != null || devicePhotoBase64.isNotBlank())
+                val datesReady = when (ipuStatus) {
+                    "Новый" -> nextCheck.isNotBlank()
+                    "Годен" -> lastCheck.isNotBlank() && nextCheck.isNotBlank()
+                    else -> lastCheck.isNotBlank()
+                }
                 Button(
-                    enabled = meterType.isNotBlank() && serialNumber.isNotBlank() && requiredPhotoReady,
+                    enabled = meterType.isNotBlank() && serialNumber.isNotBlank() &&
+                        requiredPhotoReady && datesReady,
                     onClick = {
                         val meterId = editingMeterId
                         if (meterId == null) {
@@ -1022,7 +1211,7 @@ private fun ColumnScope.CompletionWizardScreen(
             }
 
             3 -> {
-                Text("Вид оплаты", style = MaterialTheme.typography.titleLarge)
+                AppHeading("Вид оплаты")
                 InformationLine("Сумма номенклатуры", nomenclatureTotal.toString())
                 listOf("Наличные", "Эквайринг", "Эквайринг + Наличные").forEach { type ->
                     FilterChip(
@@ -1071,7 +1260,7 @@ private fun ColumnScope.CompletionWizardScreen(
             }
 
             else -> {
-                Text("Итоговый отчёт", style = MaterialTheme.typography.titleLarge)
+                AppHeading("Итоговый отчёт")
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         InformationLine("Заявка", "№ ${details.number}")
@@ -1129,7 +1318,7 @@ private fun SessionMeterList(
     onEdit: (WaterMeter) -> Unit,
     onDelete: (WaterMeter) -> Unit,
 ) {
-    Text(title, style = MaterialTheme.typography.titleLarge)
+    AppHeading(title)
     if (meters.isEmpty()) Text("Добавленных приборов нет")
     meters.forEachIndexed { index, meter ->
         Card(Modifier.fillMaxWidth()) {
@@ -1232,10 +1421,36 @@ private fun WizardDateField(label: String, value: String, onChange: (String) -> 
 }
 
 @Composable
+private fun VerificationDateWithToday(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+) {
+    WizardDateField(label, value, onChange)
+    TextButton(
+        onClick = {
+            onChange(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()))
+        },
+    ) { Text("Сегодня") }
+}
+
+private fun calculateNextVerification(lastCheck: String, years: Int): String {
+    val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false }
+    val parsed = runCatching { formatter.parse(lastCheck) }.getOrNull() ?: return ""
+    val calendar = Calendar.getInstance().apply {
+        time = parsed
+        add(Calendar.YEAR, years)
+        add(Calendar.DAY_OF_MONTH, -1)
+    }
+    return formatter.format(calendar.time)
+}
+
+@Composable
 private fun ColumnScope.DetailsScreen(
     details: ApplicationDetails,
     onBack: () -> Unit,
     onComplete: (Long) -> Unit,
+    onRework: (Long) -> Unit,
     onUploadPhoto: (Long, String, String, String) -> Unit,
     onDeletePhoto: (Long, String, String) -> Unit,
     onLoadPhoto: (Long, String, String) -> Unit,
@@ -1287,17 +1502,44 @@ private fun ColumnScope.DetailsScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             item {
-                Text("Заявка № ${details.number}", style = MaterialTheme.typography.headlineSmall)
+                DetailsGroupTitle("Заявка № ${details.number}")
             }
             item {
-                CollapsibleSection("Информация о заявке") {
-                        InformationLine("Статус", details.status)
-                        InformationLine("Дата выезда", details.work_date.orEmpty())
-                        InformationLine("Интервал", details.interval)
-                        ActionInformationLine("Адрес", details.address) {
+                DetailsGroupTitle("Информация о заявке")
+            }
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        InlineInformationLine("Статус", details.status)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CompactInformationLine(
+                                "Дата выезда", details.work_date.orEmpty(), Modifier.weight(1f)
+                            )
+                            CompactInformationLine(
+                                "Интервал", details.interval, Modifier.weight(1f)
+                            )
+                        }
+                        InlineActionInformationLine("Адрес", details.address) {
                             openNavigator(context, details.address)
                         }
-                        InformationLine("ФИО клиента", details.client)
+                        InlineInformationLine("ФИО клиента", details.client)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CompactActionInformationLine(
+                                "Телефон", details.phone_number, Modifier.weight(1f)
+                            ) { openDialer(context, details.phone_number) }
+                            CompactActionInformationLine(
+                                "Телефон 2", details.phone_number_2, Modifier.weight(1f)
+                            ) { openDialer(context, details.phone_number_2) }
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1318,15 +1560,10 @@ private fun ColumnScope.DetailsScreen(
                                 modifier = Modifier.weight(1.4f),
                             )
                         }
-                        InformationLine("Шлагбаум", details.barrier)
-                        ActionInformationLine("Телефон", details.phone_number) {
-                            openDialer(context, details.phone_number)
-                        }
-                        ActionInformationLine("Телефон 2", details.phone_number_2) {
-                            openDialer(context, details.phone_number_2)
-                        }
-                        InformationLine("Комментарии", details.comments)
-                        InformationLine("Комментарий метролога", details.metrolog_comments)
+                        InlineInformationLine("Шлагбаум", details.barrier)
+                        InlineInformationLine("Комментарии", details.comments)
+                        InlineInformationLine("Комментарий метролога", details.metrolog_comments)
+                    }
                 }
             }
             val coldWaterMeters = details.water_meters.filter {
@@ -1415,9 +1652,21 @@ private fun ColumnScope.DetailsScreen(
                 }
             }
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onBack) { Text("Назад") }
-                    Button(onClick = { onComplete(details.id) }) { Text("Завершить заявку") }
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onComplete(details.id) },
+                    ) { Text("Завершить заявку") }
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { onRework(details.id) },
+                    ) { Text("Передать на доработку") }
+                    Button(modifier = Modifier.fillMaxWidth(), onClick = onBack) {
+                        Text("Назад")
+                    }
                 }
             }
         }
@@ -1455,64 +1704,47 @@ private fun CollapsibleSection(
     content: @Composable () -> Unit,
 ) {
     var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded) }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (centerTitle && actionLabel == null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(headerColor, RoundedCornerShape(8.dp))
-                        .clickable { expanded = !expanded }
-                        .padding(vertical = 4.dp),
-                ) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleLarge,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().align(Alignment.Center),
-                    )
-                    Button(
-                        onClick = { expanded = !expanded },
-                        modifier = Modifier.align(Alignment.CenterEnd),
-                    ) { Text(if (expanded) "▲" else "▼") }
-                }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(headerColor, RoundedCornerShape(8.dp))
-                        .clickable { expanded = !expanded }
-                        .padding(start = 10.dp, top = 4.dp, bottom = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (actionLabel != null && onAction != null) {
-                        TextButton(onClick = onAction) { Text(actionLabel) }
-                    }
-                    Button(onClick = { expanded = !expanded }) {
-                        Text(if (expanded) "▲" else "▼")
-                    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(headerColor, RoundedCornerShape(8.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 6.dp),
+        ) {
+            AppHeading(title, Modifier.align(Alignment.Center))
+            if (actionLabel != null && onAction != null) {
+                TextButton(onClick = onAction, modifier = Modifier.align(Alignment.CenterStart)) {
+                    Text(actionLabel)
                 }
             }
-            if (expanded) content()
+            Button(onClick = { expanded = !expanded }, modifier = Modifier.align(Alignment.CenterEnd)) {
+                Text(if (expanded) "▲" else "▼")
+            }
+        }
+        if (expanded) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) { content() }
+            }
         }
     }
 }
 
 @Composable
-private fun DetailsGroupTitle(title: String) {
+private fun AppHeading(title: String, modifier: Modifier = Modifier) {
     Text(
         title,
-        style = MaterialTheme.typography.titleLarge,
+        style = MaterialTheme.typography.headlineSmall,
         textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
     )
 }
+
+@Composable
+private fun DetailsGroupTitle(title: String) = AppHeading(title)
 
 private val photoTypes = listOf(
     "f1730" to "Акт поверки",
@@ -1655,6 +1887,61 @@ private fun CompactInformationLine(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(title, style = MaterialTheme.typography.labelLarge)
         Text(value.ifBlank { "—" })
+    }
+}
+
+@Composable
+private fun InlineInformationLine(title: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text("$title:", style = MaterialTheme.typography.labelLarge)
+        Text(value.ifBlank { "—" }, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun InlineActionInformationLine(
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text("$title:", style = MaterialTheme.typography.labelLarge)
+        Text(
+            text = value.ifBlank { "—" },
+            color = if (value.isBlank()) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.primary,
+            textDecoration = if (value.isBlank()) null else TextDecoration.Underline,
+            modifier = Modifier.weight(1f).let {
+                if (value.isBlank()) it else it.clickable(onClick = onClick)
+            },
+        )
+    }
+}
+
+@Composable
+private fun CompactActionInformationLine(
+    title: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = MaterialTheme.typography.labelLarge)
+        Text(
+            text = value.ifBlank { "—" },
+            color = if (value.isBlank()) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.primary,
+            textDecoration = if (value.isBlank()) null else TextDecoration.Underline,
+            modifier = if (value.isBlank()) Modifier else Modifier.clickable(onClick = onClick),
+        )
     }
 }
 

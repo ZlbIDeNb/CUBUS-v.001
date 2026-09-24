@@ -5,7 +5,7 @@ plugins {
 }
 
 val apiBaseUrl = providers.gradleProperty("API_BASE_URL")
-    .orElse("http://127.0.0.1:8000/")
+    .orElse("http://10.0.2.2:8000/")
 
 android {
     namespace = "ru.zilisnik.mobile"
@@ -68,4 +68,8 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+tasks.withType<JavaCompile>().configureEach {
+    enabled = false
 }

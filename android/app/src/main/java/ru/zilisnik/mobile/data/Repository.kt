@@ -22,9 +22,9 @@ class Repository {
             }
         }
         val client = OkHttpClient.Builder()
-            .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-            .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
             .addInterceptor(logging)
             .build()
         api = Retrofit.Builder()
@@ -42,8 +42,8 @@ class Repository {
 
     suspend fun profile(): UserProfile = api.profile(auth())
 
-    suspend fun schedule(year: Int, month: Int): List<ScheduleDay> =
-        api.schedule(auth(), year, month)
+    suspend fun schedule(year: Int, month: Int, refresh: Boolean = false): List<ScheduleDay> =
+        api.schedule(auth(), year, month, refresh)
 
     suspend fun materialUsage(workDate: String): List<MaterialUsageItem> =
         api.materialUsage(auth(), workDate)
@@ -60,8 +60,10 @@ class Repository {
     suspend fun close(id: Long, request: CloseApplicationRequest): OperationResult =
         api.closeApplication(auth(), UUID.randomUUID().toString(), id, request)
 
-    suspend fun sendToRework(id: Long): OperationResult =
-        api.sendToRework(auth(), UUID.randomUUID().toString(), id)
+    suspend fun reworkReasons(): List<String> = api.reworkReasons(auth())
+
+    suspend fun sendToRework(id: Long, request: ReworkRequest): OperationResult =
+        api.sendToRework(auth(), UUID.randomUUID().toString(), id, request)
 
     suspend fun uploadPhoto(id: Long, request: UploadPhotoRequest) {
         api.uploadPhoto(auth(), id, request)
@@ -81,7 +83,8 @@ class Repository {
     suspend fun nomenclature(id: Long): List<NomenclatureItem> =
         api.nomenclature(auth(), id)
 
-    suspend fun priceList(): List<PriceListItem> = api.priceList(auth())
+    suspend fun priceList(refresh: Boolean = false): List<PriceListItem> =
+        api.priceList(auth(), refresh)
 
     suspend fun addNomenclature(id: Long, request: AddNomenclatureRequest) {
         api.addNomenclature(auth(), id, request)
@@ -91,8 +94,8 @@ class Repository {
         api.deleteNomenclature(auth(), id, nomenclatureId)
     }
 
-    suspend fun meterCatalog(query: String): List<MeterCatalogItem> =
-        api.meterCatalog(auth(), query)
+    suspend fun meterCatalog(query: String, refresh: Boolean = false): List<MeterCatalogItem> =
+        api.meterCatalog(auth(), query, refresh)
 
     suspend fun addMeter(id: Long, request: AddMeterRequest): WaterMeter =
         try {

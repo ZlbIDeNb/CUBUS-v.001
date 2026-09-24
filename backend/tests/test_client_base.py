@@ -1,10 +1,65 @@
 import asyncio
 import base64
+from datetime import date
 
 import httpx
 
 from app.client_base import APPLICATION_STATUSES, ClientBaseClient, ClientBaseError
 from app.models import AddMeterRequest, AddNomenclatureRequest
+
+
+def test_rework_reasons_are_read_from_field_metadata():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {"rework_reason": "f13630"}
+
+        async def fake_request(method, path, **kwargs):
+            assert method == "GET"
+            assert path == "table/130"
+            assert kwargs["params"] == {"include": "fields"}
+            return {
+                "data": {"attributes": {"fields": [
+                    {"id": "13630", "name": "Причина", "options": [
+                        {"value": "Клиент не отвечает"},
+                        {"value": "Перенос даты"},
+                    ]}
+                ]}}
+            }
+
+        client._request = fake_request
+        assert await client.rework_reasons() == ["Клиент не отвечает", "Перенос даты"]
+
+    asyncio.run(run_test())
+
+
+def test_send_to_rework_writes_date_reason_comment_and_status():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "rework_call_date": "f13620",
+            "rework_reason": "f13630",
+            "metrolog_comments": "f17940",
+            "status": "f1680",
+        }
+        captured = {}
+
+        async def fake_request(method, path, **kwargs):
+            captured.update(method=method, path=path, body=kwargs["json"])
+            return {}
+
+        client._request = fake_request
+        await client.send_to_rework(40005, "Перенос даты", "Позвонить завтра")
+        attrs = captured["body"]["data"]["attributes"]
+        assert captured["method"] == "PATCH"
+        assert captured["path"] == "data130/40005"
+        assert attrs == {
+            "f13620": date.today().isoformat(),
+            "f13630": "Перенос даты",
+            "f17940": "Позвонить завтра",
+            "f1680": "На Доработку",
+        }
+
+    asyncio.run(run_test())
 
 
 def test_list_all_loads_every_page():
@@ -121,6 +176,71 @@ def test_nomenclature_field_is_discovered_from_table_metadata():
 
     assert ClientBaseClient._find_field_id(metadata, ("заяв",)) == "f9001"
     assert ClientBaseClient._find_field_id(metadata, ("наименование", "прайс")) == "f9002"
+
+
+def test_table_220_overrides_generic_employee_schedule():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "employee_id": "f1400",
+            "employee_work_days": "f4901",
+            "employee_work_schedule": "f15711",
+            "employee_schedule_control": "f2980",
+            "schedule_employee": "f3110",
+            "schedule_date": "f3120",
+            "schedule_status": "f13391",
+        }
+
+        async def fake_employee_row(_login):
+            return {"id": "501", "attributes": {"f1400": "77", "f15711": "Пн-Пт"}}
+
+        async def fake_list_all(path, **kwargs):
+            assert path == "data220"
+            assert "eq(f3110,501)" in kwargs["filter_expression"]
+            assert "gte(f3120,'2026-09-01 00:00:00')" in kwargs["filter_expression"]
+            return [
+                {"attributes": {"f3110": "501", "f3120": "2026-09-05 00:00:00", "f13391": "Работает"}},
+                {"attributes": {"f3110": "501", "f3120": "2026-09-07 00:00:00", "f13391": "Выходной"}},
+            ]
+
+        client._employee_row = fake_employee_row
+        client._list_all = fake_list_all
+        result = await client.employee_schedule("employee", 2026, 9)
+
+        assert result[4].is_working is True
+        assert result[6].is_working is False
+
+    asyncio.run(run_test())
+
+
+def test_table_220_supports_vacation_status():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "employee_id": "f1400",
+            "employee_work_days": "f4901", "employee_work_schedule": "f15711",
+            "employee_schedule_control": "f2980",
+            "schedule_employee": "f3110", "schedule_date": "f3120",
+            "schedule_status": "f13391",
+        }
+
+        async def fake_employee_row(_login):
+            return {"id": "501", "attributes": {"f1400": "77"}}
+
+        async def fake_list_all(_path, **_kwargs):
+            return [
+                {"attributes": {"f3110": "501", "f3120": "05.09.2026", "f13391": "Отпуск"}},
+            ]
+
+        client._employee_row = fake_employee_row
+        client._list_all = fake_list_all
+        result = await client.employee_schedule("employee", 2026, 9)
+
+        assert result[4].has_record is True
+        assert result[4].is_working is False
+        assert result[4].work_status == "Отпуск"
+
+    asyncio.run(run_test())
 
 
 def test_numeric_field_id_and_nested_file_content_are_normalized():
@@ -341,6 +461,7 @@ def test_add_meter_links_address_client_and_application():
             "meter_registry_number": "f16051", "meter_year": "f16081",
             "meter_last_check": "f10560", "meter_next_check": "f10570",
             "meter_status": "f12740",
+            "meter_replacement": "f17640",
             "meter_device_photo": "f17860", "meter_passport_photo": "f18021",
         }
         created = {}
@@ -369,9 +490,38 @@ def test_add_meter_links_address_client_and_application():
         assert created["f10550"] == "123"
         assert created["f10540"] == "ИПУ ХВС"
         assert created["f12740"] == "Годен"
+        assert created["f17640"] == "Да"
         assert created["f17860"][0]["file_name"] == "meter.jpg"
 
     asyncio.run(run_test())
+
+
+def test_unfit_meter_with_replacement_sets_required_clientbase_values():
+    client = object.__new__(ClientBaseClient)
+    client.fields = {
+        "address_id": "address", "client_id": "client",
+        "meter_address_id": "meter_address", "meter_client_id": "meter_client",
+        "meter_application_id": "application", "meter_device_kind": "kind",
+        "meter_type": "type", "meter_serial_number": "serial",
+        "meter_registry_number": "registry", "meter_year": "year",
+        "meter_last_check": "last", "meter_next_check": "next",
+        "meter_status": "status", "meter_replacement": "replacement",
+        "meter_device_photo": "photo", "meter_passport_photo": "passport",
+    }
+    command = AddMeterRequest(
+        device_kind="ИПУ ГВС",
+        ipu_status="Не Годен",
+        replacement_done=True,
+        last_check="2026-09-24",
+        next_check="2030-09-23",
+    )
+
+    attrs = client._meter_attributes({"address": "1", "client": "2"}, 3, command)
+
+    assert attrs["status"] == "Не Годен"
+    assert attrs["replacement"] == "Нет"
+    assert attrs["last"] == "2026-09-24 00:00:00"
+    assert attrs["next"] == ""
 
 
 def test_meter_catalog_loads_sorted_dictionary_and_searches_both_values():
