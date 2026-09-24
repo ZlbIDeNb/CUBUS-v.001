@@ -1,11 +1,17 @@
 import asyncio
 import base64
 from datetime import date
+from decimal import Decimal
 
 import httpx
 
 from app.client_base import APPLICATION_STATUSES, ClientBaseClient, ClientBaseError
-from app.models import AddMeterRequest, AddNomenclatureRequest, ApplicationSummary
+from app.models import (
+    AddMeterRequest,
+    AddNomenclatureRequest,
+    ApplicationSummary,
+    NomenclatureItem,
+)
 
 
 def test_application_details_reuses_second_phone_from_summary():
@@ -842,5 +848,65 @@ def test_delete_nomenclature_checks_application_relation():
         await client.delete_nomenclature(39801, 77)
 
         assert calls == [("GET", "data351/77"), ("DELETE", "data351/77")]
+
+    asyncio.run(run_test())
+
+
+def test_period_report_derives_materials_from_services_without_double_counting():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "application_metrolog_id": "metrolog",
+            "status": "status",
+            "work_date": "date",
+            "cash_sum": "cash",
+            "card_sum": "card",
+        }
+
+        async def fake_employee_id(_crm_login):
+            return 17
+
+        async def fake_list_all(_path, **_kwargs):
+            return [{"id": "10", "attributes": {"cash": "10600", "card": "0"}}]
+
+        async def fake_price_list():
+            return []
+
+        async def fake_nomenclature(_application_id):
+            return [
+                NomenclatureItem(
+                    id=1,
+                    name="Комплекс работ по замене работ ИПУ (ЭКОНОМ 80)",
+                    quantity="2",
+                    total="10600",
+                ),
+                NomenclatureItem(
+                    id=2,
+                    name="Счетчик ЭКО НОМ СВ 15-80",
+                    quantity="2",
+                    total="0",
+                ),
+                NomenclatureItem(
+                    id=3,
+                    name="Замена шарового крана",
+                    quantity="1",
+                    total="2200",
+                ),
+            ]
+
+        client._employee_id = fake_employee_id
+        client._list_all = fake_list_all
+        client.price_list = fake_price_list
+        client._nomenclature = fake_nomenclature
+        client._cache_get = lambda _key: "Да"
+
+        report = await client.period_report("metrolog", date(2026, 9, 1), date(2026, 9, 30))
+        materials = {line.name: line.quantity for line in report.materials}
+
+        assert materials["Счетчик ЭКО НОМ СВ 15-80"] == Decimal("2")
+        assert materials["Кран 1/2"] == Decimal("1")
+        assert report.administrative_expenses_status == "Да"
+        assert report.administrative_expenses == Decimal("750.00")
+        assert report.metrologist_net == Decimal("4250.00")
 
     asyncio.run(run_test())

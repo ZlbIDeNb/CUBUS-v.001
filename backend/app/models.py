@@ -48,6 +48,11 @@ class ApplicationMapPoint(BaseModel):
     application_id: int
     number: str
     address: str
+    interval: str = ""
+    delivery_time: str = ""
+    phone_number: str = ""
+    client: str = ""
+    comments: str = ""
     latitude: float
     longitude: float
 
@@ -103,6 +108,7 @@ class EmployeeProfile(BaseModel):
     home_address: str = ""
     home_latitude: float | None = None
     home_longitude: float | None = None
+    administrative_expenses: str = "Нет"
     equipment: list[EmployeeEquipment] = Field(default_factory=list)
 
 
@@ -110,10 +116,21 @@ class HomeAddressRequest(BaseModel):
     address: str = Field(min_length=3, max_length=500)
 
 
+class AdministrativeExpensesRequest(BaseModel):
+    administrative_expenses: str = Field(pattern="^(Да|Нет)$")
+
+
 class HomeAddress(BaseModel):
     address: str
     latitude: float
     longitude: float
+
+
+class WeatherSnapshot(BaseModel):
+    city: str = "г. Москва"
+    temperature: float | None = None
+    humidity: float | None = None
+    pressure_mm_hg: float | None = None
 
 
 class WaterMeter(BaseModel):
@@ -143,6 +160,58 @@ class ApplicationPhoto(BaseModel):
 
 class PhotoContent(BaseModel):
     content_base64: str = ""
+
+
+class DocumentationCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    comment: str = Field(default="", max_length=4000)
+    filename: str = Field(min_length=1, max_length=500)
+    mime_type: str
+    content_base64: str
+
+
+class DocumentationItem(BaseModel):
+    id: int
+    title: str
+    comment: str = ""
+    filename: str
+    mime_type: str
+    created_at: str
+
+
+class DocumentationContent(BaseModel):
+    filename: str
+    mime_type: str
+    content_base64: str
+
+
+class ReportLine(BaseModel):
+    name: str
+    quantity: Decimal = Decimal("0")
+    total: Decimal = Decimal("0")
+    unit_price: Decimal = Decimal("0")
+    metrologist_gross: Decimal = Decimal("0")
+    bank_commission: Decimal = Decimal("0")
+    administrative_expenses: Decimal = Decimal("0")
+    metrologist_net: Decimal = Decimal("0")
+    company: Decimal = Decimal("0")
+
+
+class PeriodReport(BaseModel):
+    date_from: date
+    date_to: date
+    applications_count: int = 0
+    total: Decimal = Decimal("0")
+    cash: Decimal = Decimal("0")
+    card: Decimal = Decimal("0")
+    bank_commission: Decimal = Decimal("0")
+    administrative_expenses: Decimal = Decimal("0")
+    administrative_expenses_status: str = "Нет"
+    metrologist_gross: Decimal = Decimal("0")
+    metrologist_net: Decimal = Decimal("0")
+    company: Decimal = Decimal("0")
+    services: list[ReportLine] = Field(default_factory=list)
+    materials: list[ReportLine] = Field(default_factory=list)
 
 
 class NomenclatureItem(BaseModel):

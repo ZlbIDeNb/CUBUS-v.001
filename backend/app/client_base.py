@@ -2,7 +2,7 @@ import asyncio
 import base64
 import calendar
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import logging
 from pathlib import Path
@@ -30,8 +30,11 @@ from .models import (
     MeterCatalogItem,
     MaterialUsageItem,
     PriceListItem,
+    PeriodReport,
+    ReportLine,
     ScheduleDay,
     WarehouseItem,
+    WeatherSnapshot,
     WaterMeter,
 )
 
@@ -253,6 +256,278 @@ class ClientBaseClient:
                     counts[value] += 1
         return [ApplicationStatusCount(status=name, count=counts[name]) for name in APPLICATION_STATUSES]
 
+    async def period_report(
+        self, crm_login: str, date_from: date, date_to: date
+    ) -> PeriodReport:
+        employee_id = await self._employee_id(crm_login)
+        if employee_id is None:
+            return PeriodReport(date_from=date_from, date_to=date_to)
+        conditions = [
+            "eq(status,0)",
+            f"eq({self.fields['application_metrolog_id']},{employee_id})",
+            f"eq({self.fields['status']},'Выполнено')",
+            f"gte({self.fields['work_date']},'{date_from.isoformat()} 00:00:00')",
+            f"lte({self.fields['work_date']},'{date_to.isoformat()} 23:59:59')",
+        ]
+        rows = await self._list_all(
+            "data130", filter_expression=f"and({','.join(conditions)})"
+        )
+
+        def amount(value: Any) -> Decimal:
+            try:
+                return Decimal(str(value or "0").replace(" ", "").replace(",", "."))
+            except InvalidOperation:
+                return Decimal("0")
+
+        cash = sum(
+            (amount((row.get("attributes", {}) or {}).get(self.fields["cash_sum"])) for row in rows),
+            Decimal("0"),
+        )
+        card = sum(
+            (amount((row.get("attributes", {}) or {}).get(self.fields["card_sum"])) for row in rows),
+            Decimal("0"),
+        )
+        def normalized(value: str) -> str:
+            return re.sub(r"[^0-9a-zа-я]+", " ", value.casefold().replace("ё", "е")).strip()
+
+        price_items = await self.price_list()
+        kinds = {normalized(item.name): item.item_kind for item in price_items}
+
+        material_prefixes = (
+            "счетчик", "кран 1 2", "тройник", "муфта", "нип", "угол",
+            "футор", "цанга", "удлинитель", "аэратор", "гибкая подводка",
+            "проволока", "прокладка", "лен", "труба", "обратный клапан",
+            "фильтр грубой очистки", "присоединитель с обратным клапаном",
+        )
+
+        def is_material(name: str) -> bool:
+            clean = normalized(name)
+            if clean.startswith(material_prefixes):
+                return True
+            configured = kinds.get(clean)
+            if configured in {"material", "service"}:
+                return configured == "material"
+            return False
+
+        # ClientBase table "Связь товаров и услуг": a completed service consumes
+        # the linked stock item in the same quantity. Keep the matching tolerant
+        # to abbreviated service names used in older applications.
+        def linked_material(name: str) -> str | None:
+            clean = normalized(name)
+            if "замена обратного клапана" in clean:
+                return "Обратный клапан (Таблетка)"
+            if "замена фильтра грубой очистки" in clean:
+                return "Фильтр грубой очистки"
+            if "замена присоединителя" in clean and "valtec" in clean:
+                return "Присоединитель с обратным клапаном (Valtec)"
+            if "замена присоединителя" in clean and "латун" in clean:
+                return "Присоединитель с обратным клапаном (Латунь)"
+            if "замена шарового крана" in clean or "замена крана" in clean:
+                return "Кран 1/2"
+            if "ителма" in clean and "универсаль" in clean:
+                return "Счетчик ХВС/ГВС УНИВЕРСАЛЬНЫЙ.D080 (Импульс)"
+            if "ителма" in clean and "гвс" in clean:
+                return "Счетчик ГВС ITELMA WFW24.D080 (Импульс)"
+            if "ителма" in clean and "хвс" in clean:
+                return "Счетчик ХВС ITELMA WFK24.D080 (Импульс)"
+            if "эконом" in clean and "100" in clean:
+                return "Счетчик ЭКО НОМ СВ 15-100"
+            if "эконом" in clean and "80" in clean:
+                return "Счетчик ЭКО НОМ СВ 15-80"
+            return None
+
+        # Fixed tariff and payout rules supplied by the business owner.
+        # Tuple: unit price, metrologist gross, company base.
+        def service_rule(name: str, fallback_total: Decimal, quantity: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+            clean = normalized(name)
+            if "поверк" in clean and "800" in clean:
+                return Decimal("800"), Decimal("200"), Decimal("600")
+            if "поверк" in clean and "550" in clean:
+                return Decimal("550"), Decimal("200"), Decimal("350")
+            if "эконом" in clean and ("замен" in clean or "комплекс" in clean):
+                return Decimal("5300"), Decimal("1950"), Decimal("3350")
+            if "ителма" in clean and ("замен" in clean or "комплекс" in clean):
+                return Decimal("6300"), Decimal("2150"), Decimal("4150")
+            fixed_prices = (
+                (("монтаж ипу", "представлен"), Decimal("4300")),
+                (("замена фильтра грубой очистки",), Decimal("2800")),
+                (("замена присоединителя", "латун"), Decimal("2800")),
+                (("замена уплотнительных прокладок",), Decimal("1100")),
+                (("замена шарового крана",), Decimal("2200")),
+                (("замена крана",), Decimal("2200")),
+                (("очистка фильтра грубой очистки",), Decimal("1700")),
+                (("устранение течи",), Decimal("1500")),
+                (("фиксация показаний",), Decimal("800")),
+                (("замена обратного клапана",), Decimal("1700")),
+                (("выезд специалиста",), Decimal("900")),
+                (("затрудненного доступа",), Decimal("1000")),
+                (("сложный доступ",), Decimal("1000")),
+                (("дополнительные сантехнические работы",), Decimal("1000")),
+                (("замена присоединителя", "valtec"), Decimal("3000")),
+            )
+            for keywords, price in fixed_prices:
+                if all(keyword in clean for keyword in keywords):
+                    half = price / 2
+                    return price, half, half
+            unit_price = fallback_total / quantity if quantity else Decimal("0")
+            half = unit_price / 2
+            return unit_price, half, half
+
+        positions = await asyncio.gather(
+            *(self._nomenclature(int(row["id"])) for row in rows)
+        )
+        service_totals: dict[str, tuple[Decimal, Decimal]] = {}
+        material_totals: dict[str, tuple[Decimal, Decimal]] = {}
+        for application_positions in positions:
+            for item in application_positions:
+                target = material_totals if is_material(item.name) else service_totals
+                old_quantity, old_total = target.get(
+                    item.name, (Decimal("0"), Decimal("0"))
+                )
+                target[item.name] = (
+                    old_quantity + amount(item.quantity),
+                    old_total + amount(item.total),
+                )
+
+        # Add stock consumption implied by services. When ClientBase also sends
+        # the product as a separate nomenclature row, use the greater quantity
+        # instead of adding it again, so one sale cannot create a double write-off.
+        linked_totals: dict[str, Decimal] = {}
+        for service_name, (quantity, _) in service_totals.items():
+            product_name = linked_material(service_name)
+            if product_name:
+                linked_totals[product_name] = (
+                    linked_totals.get(product_name, Decimal("0")) + quantity
+                )
+
+        def material_identity(value: str) -> str:
+            return normalized(value).replace(" ", "")
+
+        for product_name, linked_quantity in linked_totals.items():
+            existing_name = next(
+                (
+                    name
+                    for name in material_totals
+                    if material_identity(name) == material_identity(product_name)
+                ),
+                None,
+            )
+            if existing_name is None:
+                material_totals[product_name] = (linked_quantity, Decimal("0"))
+            else:
+                existing_quantity, existing_total = material_totals[existing_name]
+                material_totals[existing_name] = (
+                    max(existing_quantity, linked_quantity),
+                    existing_total,
+                )
+
+        service_drafts: list[tuple[str, Decimal, Decimal, Decimal, Decimal]] = []
+        for name, (quantity, raw_total) in sorted(
+            service_totals.items(), key=lambda item: item[0].casefold()
+        ):
+            unit_price, metrologist_unit, company_unit = service_rule(
+                name, raw_total, quantity
+            )
+            service_drafts.append((
+                name,
+                quantity,
+                unit_price,
+                metrologist_unit * quantity,
+                company_unit * quantity,
+            ))
+
+        total_commission = (card * Decimal("0.05")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        saved_administrative_expenses = self._cache_get(
+            f"profile-administrative-expenses:v1:{crm_login.casefold()}"
+        )
+        administrative_expenses_status = (
+            saved_administrative_expenses
+            if saved_administrative_expenses in {"Да", "Нет"}
+            else "Нет"
+        )
+        total_metrologist_gross = sum(
+            (gross for _, _, _, gross, _ in service_drafts), Decimal("0")
+        )
+        administrative_expenses = (
+            total_metrologist_gross * Decimal("0.15")
+            if administrative_expenses_status == "Да"
+            else Decimal("0")
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        service_revenue = sum(
+            (unit_price * quantity for _, quantity, unit_price, _, _ in service_drafts),
+            Decimal("0"),
+        )
+        services: list[ReportLine] = []
+        assigned_commission = Decimal("0")
+        assigned_administrative_expenses = Decimal("0")
+        for index, (name, quantity, unit_price, metrologist_gross, company_base) in enumerate(service_drafts):
+            if index == len(service_drafts) - 1:
+                commission = total_commission - assigned_commission
+            elif service_revenue:
+                commission = (total_commission * unit_price * quantity / service_revenue).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                assigned_commission += commission
+            else:
+                commission = Decimal("0")
+            if index == len(service_drafts) - 1:
+                line_administrative_expenses = (
+                    administrative_expenses - assigned_administrative_expenses
+                )
+            elif total_metrologist_gross:
+                line_administrative_expenses = (
+                    administrative_expenses
+                    * metrologist_gross
+                    / total_metrologist_gross
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                assigned_administrative_expenses += line_administrative_expenses
+            else:
+                line_administrative_expenses = Decimal("0")
+            services.append(ReportLine(
+                name=name,
+                quantity=quantity,
+                unit_price=unit_price,
+                total=unit_price * quantity,
+                metrologist_gross=metrologist_gross,
+                bank_commission=commission,
+                administrative_expenses=line_administrative_expenses,
+                metrologist_net=(
+                    metrologist_gross - commission - line_administrative_expenses
+                ),
+                company=company_base + commission + line_administrative_expenses,
+            ))
+
+        materials = [
+            ReportLine(name=name, quantity=quantity, total=total)
+            for name, (quantity, total) in sorted(
+                material_totals.items(), key=lambda item: item[0].casefold()
+            )
+        ]
+        metrologist_gross = sum((line.metrologist_gross for line in services), Decimal("0"))
+        metrologist_net = (
+            metrologist_gross - total_commission - administrative_expenses
+        )
+        company = sum((line.company for line in services), Decimal("0"))
+
+        return PeriodReport(
+            date_from=date_from,
+            date_to=date_to,
+            applications_count=len(rows),
+            total=cash + card,
+            cash=cash,
+            card=card,
+            bank_commission=total_commission,
+            administrative_expenses=administrative_expenses,
+            administrative_expenses_status=administrative_expenses_status,
+            metrologist_gross=metrologist_gross,
+            metrologist_net=metrologist_net,
+            company=company,
+            services=services,
+            materials=materials,
+        )
+
     async def application_map_points(
         self, crm_login: str, work_date: date | None = None
     ) -> list[ApplicationMapPoint]:
@@ -274,6 +549,11 @@ class ClientBaseClient:
                     application_id=application.id,
                     number=application.number,
                     address=str(resolved["display_address"]),
+                    interval=application.interval,
+                    delivery_time=application.delivery_time,
+                    phone_number=application.phone_number,
+                    client=application.client,
+                    comments=application.comments,
                     latitude=float(resolved["latitude"]),
                     longitude=float(resolved["longitude"]),
                 )
@@ -425,7 +705,13 @@ class ClientBaseClient:
         except (KeyError, TypeError, ValueError):
             return None
 
-    async def metrolog_warehouse(self, crm_login: str) -> list[WarehouseItem]:
+    async def metrolog_warehouse(
+        self, crm_login: str, force_refresh: bool = False
+    ) -> list[WarehouseItem]:
+        cache_key = f"metrolog-warehouse:v1:{crm_login.casefold()}"
+        cached = None if force_refresh else self._cache_get(cache_key)
+        if cached is not None:
+            return [WarehouseItem(**item) for item in cached]
         try:
             user_id = await self._user_id(crm_login)
         except ClientBaseError:
@@ -511,7 +797,13 @@ class ClientBaseClient:
                     ),
                 )
             )
-        return sorted(result, key=lambda item: item.name.casefold())
+        result = sorted(result, key=lambda item: item.name.casefold())
+        self._cache_set(
+            cache_key,
+            [item.model_dump() for item in result],
+            365 * 24 * 60 * 60,
+        )
+        return result
 
     async def employee_profile(
         self, crm_login: str, role: str, device_name: str
@@ -520,6 +812,14 @@ class ClientBaseClient:
         attrs = row.get("attributes", {}) if row else {}
         home = self._cache_get(f"profile-home:v1:{crm_login.casefold()}")
         home = home if isinstance(home, dict) else {}
+        saved_administrative_expenses = self._cache_get(
+            f"profile-administrative-expenses:v1:{crm_login.casefold()}"
+        )
+        administrative_expenses = (
+            saved_administrative_expenses
+            if saved_administrative_expenses in {"Да", "Нет"}
+            else "Нет"
+        )
         return EmployeeProfile(
             login=crm_login,
             role=role,
@@ -539,7 +839,17 @@ class ClientBaseClient:
             home_address=str(home.get("address", "") or ""),
             home_latitude=home.get("latitude"),
             home_longitude=home.get("longitude"),
+            administrative_expenses=administrative_expenses,
             equipment=self._employee_equipment(attrs),
+        )
+
+    def save_administrative_expenses(self, crm_login: str, value: str) -> None:
+        if value not in {"Да", "Нет"}:
+            raise ClientBaseError("Неизвестное значение административных расходов")
+        self._cache_set(
+            f"profile-administrative-expenses:v1:{crm_login.casefold()}",
+            value,
+            REFERENCE_CACHE_TTL_SECONDS,
         )
 
     async def save_home_address(self, crm_login: str, address: str) -> HomeAddress:
@@ -557,6 +867,46 @@ class ClientBaseClient:
             REFERENCE_CACHE_TTL_SECONDS,
         )
         return home
+
+    async def current_weather(self, crm_login: str) -> WeatherSnapshot:
+        # Until device geolocation is introduced, the dashboard is fixed to Moscow.
+        latitude = 55.7558
+        longitude = 37.6173
+        city = "г. Москва"
+        cache_key = f"weather-current:v1:{latitude:.3f}:{longitude:.3f}"
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, dict):
+            return WeatherSnapshot(**cached)
+        try:
+            async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+                response = await client.get(
+                    "https://api.open-meteo.com/v1/forecast",
+                    params={
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "current": (
+                            "temperature_2m,relative_humidity_2m,surface_pressure"
+                        ),
+                        "timezone": "Europe/Moscow",
+                    },
+                )
+                response.raise_for_status()
+                current = (response.json() or {}).get("current", {}) or {}
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            raise ClientBaseError("Погода временно недоступна") from exc
+        pressure_hpa = current.get("surface_pressure")
+        weather = WeatherSnapshot(
+            city=city,
+            temperature=current.get("temperature_2m"),
+            humidity=current.get("relative_humidity_2m"),
+            pressure_mm_hg=(
+                round(float(pressure_hpa) * 0.750062, 1)
+                if pressure_hpa is not None
+                else None
+            ),
+        )
+        self._cache_set(cache_key, weather.model_dump(), 15 * 60)
+        return weather
 
     async def employee_schedule(
         self, crm_login: str, year: int, month: int, refresh: bool = False

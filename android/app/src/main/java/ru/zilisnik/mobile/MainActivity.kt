@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -24,8 +25,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -92,6 +95,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextAlign
@@ -101,6 +105,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.FileProvider
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import ru.zilisnik.mobile.data.ApplicationDetails
@@ -109,12 +116,17 @@ import ru.zilisnik.mobile.data.ApplicationPhoto
 import ru.zilisnik.mobile.data.ApplicationStatusCount
 import ru.zilisnik.mobile.data.ApplicationSummary
 import ru.zilisnik.mobile.data.AddMeterRequest
+import ru.zilisnik.mobile.data.DocumentationContent
+import ru.zilisnik.mobile.data.DocumentationCreate
+import ru.zilisnik.mobile.data.DocumentationItem
+import ru.zilisnik.mobile.data.PeriodReport
 import ru.zilisnik.mobile.data.PriceListItem
 import ru.zilisnik.mobile.data.MeterCatalogItem
 import ru.zilisnik.mobile.data.UserProfile
 import ru.zilisnik.mobile.data.ScheduleDay
 import ru.zilisnik.mobile.data.WaterMeter
 import ru.zilisnik.mobile.data.WarehouseItem
+import ru.zilisnik.mobile.data.WeatherSnapshot
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Calendar
@@ -155,6 +167,8 @@ private val CubusColorScheme = lightColorScheme(
 private val CubusBlockColor = Color(0xFFE2EDF2)
 private val CubusButtonColor = Color(0xFF2B5A78)
 private val WarehouseBlockColor = Color(0xFFE2EDF2)
+private val ColdWaterHeaderColor = Color(0xFFD8EEF8)
+private val HotWaterHeaderColor = Color(0xFFF7DDE3)
 private val CubusComponentShape = RoundedCornerShape(16.dp)
 private fun normalizeWarehouseName(value: String): String = value
     .lowercase(Locale("ru"))
@@ -322,12 +336,15 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class AppSection { MAIN, PROFILE, APPLICATIONS, WAREHOUSE, SERVICE }
+private enum class AppSection {
+    MAIN, PROFILE, APPLICATIONS, WAREHOUSE, SERVICE, REPORT, DOCUMENTATION
+}
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun ZilisnikApp(vm: MainViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var section by remember { mutableStateOf(AppSection.MAIN) }
     var previousSection by remember { mutableStateOf(AppSection.MAIN) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -346,32 +363,46 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(16.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                AppHeading("CUBUS v. 1.02")
+                Column(
+                    modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.cubus_logo),
+                        contentDescription = "Жилищник — служба метрологии",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .aspectRatio(702f / 389f),
+                    )
+                    state.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+                    if (state.loading) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(progress = { state.loadingProgress })
+                            Text(state.loadingMessage, textAlign = TextAlign.Center)
+                            Text("${(state.loadingProgress * 100).roundToInt()} %")
+                        }
+                    } else RegistrationScreen(vm::register)
+                }
                 Image(
-                    painter = painterResource(R.drawable.cubus_logo),
-                    contentDescription = "Жилищник — служба метрологии",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .aspectRatio(702f / 389f),
+                    painter = painterResource(R.drawable.cubus_brand),
+                    contentDescription = "CUBUS",
+                    modifier = Modifier.fillMaxWidth(0.34f).aspectRatio(576f / 389f),
                 )
-                state.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-                if (state.loading) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        CircularProgressIndicator(progress = { state.loadingProgress })
-                        Text(state.loadingMessage, textAlign = TextAlign.Center)
-                        Text("${(state.loadingProgress * 100).roundToInt()} %")
-                    }
-                } else RegistrationScreen(vm::register)
+                Text(
+                    "CUBUS v. 1.02",
+                    fontSize = 18.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                )
             }
         }
         return
@@ -391,18 +422,68 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
             vm.clearMessage()
         }
     }
+    LaunchedEffect(state.authorized) {
+        val preferences = context.getSharedPreferences("cubus_automatic_updates", Context.MODE_PRIVATE)
+        while (state.authorized) {
+            val now = Calendar.getInstance()
+            val today = now.get(Calendar.DAY_OF_WEEK)
+            val currentTime = "%02d:%02d".format(
+                Locale.US,
+                now.get(Calendar.HOUR_OF_DAY),
+                now.get(Calendar.MINUTE),
+            )
+            val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(now.time)
+            listOf<Pair<String, () -> Unit>>(
+                "work_schedule" to { vm.refreshSchedule() },
+                "warehouse" to { vm.loadWarehouse() },
+            ).forEach { (key, update) ->
+                val days = preferences.getString("${key}_days", "2,3,4,5,6")
+                    .orEmpty().split(',').mapNotNull(String::toIntOrNull).toSet()
+                val scheduledTime = preferences.getString("${key}_time", "08:00").orEmpty()
+                val runKey = "${key}_last_run"
+                if (today in days && currentTime >= scheduledTime &&
+                    preferences.getString(runKey, "") != todayKey
+                ) {
+                    update()
+                    preferences.edit().putString(runKey, todayKey).apply()
+                }
+            }
+            delay(30_000)
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
-                Text("CUBUS v. 1.02", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
-                DrawerItem("Основной экран", AppSection.MAIN, section) {
-                    navigateTo(AppSection.MAIN)
-                    scope.launch { drawerState.close() }
+                Column(Modifier.fillMaxHeight()) {
+                Box(Modifier.fillMaxWidth().height(72.dp)) {
+                    Text(
+                        state.profile?.let { it.full_name.ifBlank { it.login } } ?: "Метролог",
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 16.dp, end = 62.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontSize = 17.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Image(
+                        painter = painterResource(R.drawable.delete_icon),
+                        contentDescription = "Закрыть меню",
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 14.dp)
+                            .size(38.dp)
+                            .clickable { scope.launch { drawerState.close() } },
+                    )
                 }
                 DrawerItem("Личный кабинет", AppSection.PROFILE, section) {
                     navigateTo(AppSection.PROFILE)
+                    scope.launch { drawerState.close() }
+                }
+                DrawerItem("Основной экран", AppSection.MAIN, section) {
+                    navigateTo(AppSection.MAIN)
                     scope.launch { drawerState.close() }
                 }
                 DrawerItem("Заявки", AppSection.APPLICATIONS, section) {
@@ -411,19 +492,44 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                 }
                 DrawerItem("Склад метролога", AppSection.WAREHOUSE, section) {
                     navigateTo(AppSection.WAREHOUSE)
-                    vm.loadWarehouse()
+                    vm.ensureWarehouseLoaded()
                     scope.launch { drawerState.close() }
                 }
                 DrawerItem("Сервис", AppSection.SERVICE, section) {
                     navigateTo(AppSection.SERVICE)
                     scope.launch { drawerState.close() }
                 }
+                DrawerItem("Отчёт", AppSection.REPORT, section) {
+                    navigateTo(AppSection.REPORT)
+                    scope.launch { drawerState.close() }
+                }
+                DrawerItem("Документация", AppSection.DOCUMENTATION, section) {
+                    navigateTo(AppSection.DOCUMENTATION)
+                    vm.loadDocuments()
+                    scope.launch { drawerState.close() }
+                }
+                Spacer(Modifier.weight(1f))
+                Image(
+                    painter = painterResource(R.drawable.cubus_brand),
+                    contentDescription = "CUBUS",
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .fillMaxWidth(0.42f)
+                        .aspectRatio(576f / 389f),
+                )
+                Text(
+                    "CUBUS v. 1.02",
+                    fontSize = 18.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 22.dp),
+                )
+                }
             }
         },
     ) {
         Scaffold(
             topBar = {
-                if (section != AppSection.WAREHOUSE || state.selected != null) {
+                if ((section != AppSection.WAREHOUSE && section != AppSection.SERVICE) || state.selected != null) {
                     TopAppBar(
                         title = {
                             Text(
@@ -433,6 +539,8 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                                     AppSection.APPLICATIONS -> "Заявки"
                                     AppSection.WAREHOUSE -> "Склад метролога"
                                     AppSection.SERVICE -> "Сервис"
+                                    AppSection.REPORT -> "Отчёт"
+                                    AppSection.DOCUMENTATION -> "Документация"
                                 },
                                 style = MaterialTheme.typography.headlineSmall,
                                 textAlign = TextAlign.Center,
@@ -481,14 +589,21 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         meterCatalogError = state.meterCatalogError,
                         nomenclatureLoading = state.nomenclatureLoading,
                         nomenclatureError = state.nomenclatureError,
+                        photoLoadingKey = state.photoLoadingKey,
+                        photoLoadError = state.photoLoadError,
                         onBack = vm::back,
                         onUploadPhoto = vm::uploadPhoto,
+                        onDeletePhoto = vm::deletePhoto,
+                        onLoadPhoto = vm::loadPhoto,
                         onAddNomenclature = vm::addNomenclature,
                         onDeleteNomenclature = vm::deleteNomenclature,
                         onAddMeter = vm::addMeter,
                         onUpdateMeter = vm::updateMeter,
                         onDeleteMeter = vm::deleteMeter,
-                        onConfirm = vm::close,
+                        onConfirm = { id, payment, cash, card ->
+                            vm.close(id, payment, cash, card)
+                            section = AppSection.MAIN
+                        },
                     )
                     state.selected != null -> DetailsScreen(
                         details = state.selected!!,
@@ -509,6 +624,7 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                     ) { CircularProgressIndicator() }
                     section == AppSection.MAIN -> MainScreen(
                         state.profile,
+                        state.weather,
                         state.todayStatusCounts,
                         state.todayApplications,
                         state.applicationMapPoints,
@@ -516,6 +632,7 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         state.applicationMapError,
                         vm::select,
                         vm::refreshDashboard,
+                        vm::reorderMapPoints,
                     )
                     section == AppSection.PROFILE -> ProfileScreen(
                         state.profile,
@@ -526,6 +643,7 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         vm::selectScheduleMonth,
                         vm::refreshSchedule,
                         vm::saveHomeAddress,
+                        vm::saveAdministrativeExpenses,
                     )
                     section == AppSection.APPLICATIONS -> ApplicationsScreen(
                         applications = state.applications,
@@ -539,19 +657,40 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         warehouseItems = state.warehouseItems,
                         loading = state.warehouseLoading,
                         error = state.warehouseError,
-                        onRefresh = vm::loadWarehouse,
+                        onRefresh = { vm.loadWarehouse() },
                         onBack = {
                             val target = previousSection
                             previousSection = section
                             section = target
                         },
                     )
-                    else -> ServiceScreen(
+                    section == AppSection.SERVICE -> ServiceScreen(
                         priceListCount = state.priceList.size,
                         meterCatalogCount = state.meterCatalog.size,
                         refreshing = state.serviceRefreshing,
                         onRefreshCatalogs = vm::refreshReferenceCatalogs,
                         onLoadPriceList = vm::loadPriceList,
+                        onBack = {
+                            val target = previousSection
+                            previousSection = section
+                            section = target
+                        },
+                    )
+                    section == AppSection.REPORT -> ReportScreen(
+                        report = state.report,
+                        loading = state.reportLoading,
+                        error = state.reportError,
+                        onGenerate = vm::generateReport,
+                    )
+                    else -> DocumentationScreen(
+                        documents = state.documents,
+                        loading = state.documentationLoading,
+                        error = state.documentationError,
+                        content = state.documentContent,
+                        onAdd = vm::addDocument,
+                        onDelete = vm::deleteDocument,
+                        onLoadContent = vm::loadDocumentContent,
+                        onContentHandled = vm::clearDocumentContent,
                     )
                 }
                 state.message?.let {
@@ -585,6 +724,27 @@ private fun ColumnScope.WarehouseScreen(
     onRefresh: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val inventoryPreferences = remember {
+        context.getSharedPreferences("cubus_inventory", Context.MODE_PRIVATE)
+    }
+    val gson = remember { Gson() }
+    val journalType = remember {
+        object : TypeToken<List<InventoryJournalEntry>>() {}.type
+    }
+    var inventoryMode by rememberSaveable { mutableStateOf(false) }
+    var inventoryValues by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var showJournal by rememberSaveable { mutableStateOf(false) }
+    var journal by remember {
+        mutableStateOf<List<InventoryJournalEntry>>(
+            runCatching {
+                gson.fromJson<List<InventoryJournalEntry>>(
+                    inventoryPreferences.getString("journal", "[]"),
+                    journalType,
+                )
+            }.getOrNull() ?: emptyList(),
+        )
+    }
     Box(
         modifier = Modifier.fillMaxWidth().height(56.dp),
         contentAlignment = Alignment.Center,
@@ -637,7 +797,7 @@ private fun ColumnScope.WarehouseScreen(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        "Кол-во",
+                        if (inventoryMode) "Факт" else "Кол-во",
                         style = MaterialTheme.typography.labelLarge,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.width(76.dp),
@@ -677,11 +837,28 @@ private fun ColumnScope.WarehouseScreen(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(
-                                item.balance.ifBlank { "0" },
-                                style = MaterialTheme.typography.titleMedium,
-                                textAlign = TextAlign.Center,
-                            )
+                            if (inventoryMode) {
+                                BasicTextField(
+                                    value = inventoryValues[item.id].orEmpty(),
+                                    onValueChange = { value ->
+                                        inventoryValues = inventoryValues + (
+                                            item.id to value.filter { it.isDigit() || it == ',' || it == '.' || it == '-' }
+                                        )
+                                    },
+                                    singleLine = true,
+                                    textStyle = MaterialTheme.typography.titleMedium.copy(
+                                        textAlign = TextAlign.Center,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    ),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } else {
+                                Text(
+                                    item.balance.ifBlank { "0" },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
                         }
                     }
                 }
@@ -693,7 +870,166 @@ private fun ColumnScope.WarehouseScreen(
         enabled = !loading,
         onClick = onRefresh,
     ) { Text(if (loading) "Загружаем…" else "Обновить склад") }
+    if (inventoryMode) {
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                val differences = warehouseItems.mapNotNull { item ->
+                    val expected = item.balance.replace(" ", "").replace(',', '.').toDoubleOrNull() ?: 0.0
+                    val actual = inventoryValues[item.id]?.replace(',', '.')?.toDoubleOrNull() ?: 0.0
+                    val difference = actual - expected
+                    if (kotlin.math.abs(difference) < 0.0001) null else {
+                        InventoryDifference(
+                            name = item.name,
+                            warehouse = formatInventoryNumber(expected),
+                            metrologist = formatInventoryNumber(actual),
+                            difference = formatInventoryNumber(difference),
+                        )
+                    }
+                }
+                val record = InventoryJournalEntry(
+                    date = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru")).format(Date()),
+                    rows = differences,
+                )
+                journal = listOf(record) + journal
+                inventoryPreferences.edit().putString("journal", gson.toJson(journal)).apply()
+                inventoryMode = false
+                showJournal = true
+            },
+        ) { Text("Свести склад") }
+        TextButton(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { inventoryMode = false },
+        ) { Text("Отменить инвентаризацию") }
+    } else {
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = warehouseItems.isNotEmpty(),
+            onClick = {
+                inventoryValues = warehouseItems.associate { it.id to "" }
+                inventoryMode = true
+            },
+        ) { Text("Пройти инвентаризацию") }
+    }
+    TextButton(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { showJournal = true },
+    ) { Text("Журнал инвентаризаций (${journal.size})") }
+    if (showJournal) {
+        AlertDialog(
+            onDismissRequest = { showJournal = false },
+            title = { Text("Журнал инвентаризаций") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth().height(360.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    if (journal.isEmpty()) Text("Инвентаризации ещё не проводились")
+                    journal.forEach { record ->
+                        val rows = inventoryRows(record)
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.fillMaxWidth().padding(6.dp)) {
+                                Text(
+                                    record.date,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 5.dp),
+                                )
+                                if (rows.isEmpty()) {
+                                    Text("Расхождений нет", modifier = Modifier.padding(6.dp))
+                                } else {
+                                    InventoryTableHeader()
+                                    rows.forEachIndexed { index, row ->
+                                        HorizontalDivider()
+                                        InventoryTableRow(index + 1, row)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showJournal = false }) { Text("Закрыть") }
+            },
+        )
+    }
 }
+
+private data class InventoryJournalEntry(
+    val date: String,
+    val differences: List<String>? = null,
+    val rows: List<InventoryDifference>? = null,
+)
+
+private data class InventoryDifference(
+    val name: String,
+    val warehouse: String,
+    val metrologist: String,
+    val difference: String,
+)
+
+private fun inventoryRows(record: InventoryJournalEntry): List<InventoryDifference> {
+    val structured = record.rows.orEmpty()
+    if (structured.isNotEmpty()) return structured
+    val pattern = Regex("^(.*): КБ ([^,]+), факт ([^,]+), расхождение (.+)$")
+    return record.differences.orEmpty().mapNotNull { oldValue ->
+        val match = pattern.matchEntire(oldValue) ?: return@mapNotNull null
+        InventoryDifference(
+            name = match.groupValues[1],
+            warehouse = match.groupValues[2],
+            metrologist = match.groupValues[3],
+            difference = match.groupValues[4],
+        )
+    }
+}
+
+@Composable
+private fun InventoryTableHeader() {
+    Row(
+        modifier = Modifier.fillMaxWidth().background(Color(0xFFD5E5ED)).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        InventoryTableCell("№", 0.22f, true, true)
+        InventoryTableCell("Название", 1.35f, true)
+        InventoryTableCell("На складе", 0.52f, true, true)
+        InventoryTableCell("У метролога", 0.58f, true, true)
+        InventoryTableCell("Разница", 0.48f, true, true)
+    }
+}
+
+@Composable
+private fun InventoryTableRow(number: Int, row: InventoryDifference) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        InventoryTableCell(number.toString(), 0.22f, centered = true)
+        InventoryTableCell(row.name, 1.35f)
+        InventoryTableCell(row.warehouse, 0.52f, centered = true)
+        InventoryTableCell(row.metrologist, 0.58f, centered = true)
+        InventoryTableCell(row.difference, 0.48f, centered = true)
+    }
+}
+
+@Composable
+private fun RowScope.InventoryTableCell(
+    value: String,
+    weight: Float,
+    header: Boolean = false,
+    centered: Boolean = false,
+) {
+    Text(
+        value,
+        fontSize = if (header) 9.sp else 10.sp,
+        textAlign = if (centered) TextAlign.Center else TextAlign.Start,
+        maxLines = if (header) 2 else 3,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(weight).padding(horizontal = 2.dp),
+    )
+}
+
+private fun formatInventoryNumber(value: Double): String =
+    if (value % 1.0 == 0.0) value.toLong().toString() else "%.2f".format(Locale.US, value)
 
 @Composable
 private fun ColumnScope.ServiceScreen(
@@ -702,8 +1038,24 @@ private fun ColumnScope.ServiceScreen(
     refreshing: String?,
     onRefreshCatalogs: () -> Unit,
     onLoadPriceList: () -> Unit,
+    onBack: () -> Unit,
 ) {
-    AppHeading("Сервис")
+    Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+    Box(
+        modifier = Modifier.fillMaxWidth().height(56.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        BackIconButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart))
+        Text(
+            "Сервис",
+            style = MaterialTheme.typography.headlineSmall,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 60.dp),
+        )
+    }
     Card(Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -736,12 +1088,358 @@ private fun ColumnScope.ServiceScreen(
             }
         }
     }
+    AutomaticUpdateCard(
+        title = "Обновление графика работы",
+        preferenceKey = "work_schedule",
+    )
+    AutomaticUpdateCard(
+        title = "Обновление склада",
+        preferenceKey = "warehouse",
+    )
     Text(
         "Данные сохраняются в локальной базе приложения и используются без повторного обращения к КБ.",
         style = MaterialTheme.typography.bodySmall,
         textAlign = TextAlign.Center,
         modifier = Modifier.fillMaxWidth(),
     )
+    }
+}
+
+@Composable
+private fun AutomaticUpdateCard(
+    title: String,
+    preferenceKey: String,
+) {
+    val context = LocalContext.current
+    val preferences = remember {
+        context.getSharedPreferences("cubus_automatic_updates", Context.MODE_PRIVATE)
+    }
+    var selectedDays by rememberSaveable(preferenceKey) {
+        mutableStateOf(
+            preferences.getString("${preferenceKey}_days", "2,3,4,5,6")
+                .orEmpty().split(',').mapNotNull(String::toIntOrNull).toSet(),
+        )
+    }
+    var updateTime by rememberSaveable(preferenceKey) {
+        mutableStateOf(preferences.getString("${preferenceKey}_time", "08:00").orEmpty())
+    }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                listOf(
+                    Calendar.MONDAY to "Пн", Calendar.TUESDAY to "Вт",
+                    Calendar.WEDNESDAY to "Ср", Calendar.THURSDAY to "Чт",
+                    Calendar.FRIDAY to "Пт", Calendar.SATURDAY to "Сб",
+                    Calendar.SUNDAY to "Вс",
+                ).forEach { (day, label) ->
+                    FilterChip(
+                        modifier = Modifier.weight(1f),
+                        selected = day in selectedDays,
+                        onClick = {
+                            selectedDays = if (day in selectedDays) selectedDays - day else selectedDays + day
+                        },
+                        label = { Text(label, fontSize = 11.sp) },
+                    )
+                }
+            }
+            OutlinedTextField(
+                value = updateTime,
+                onValueChange = { value -> updateTime = value.filter { it.isDigit() || it == ':' }.take(5) },
+                label = { Text("Время обновления, ЧЧ:ММ") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = updateTime.matches(Regex("(?:[01]\\d|2[0-3]):[0-5]\\d")) && selectedDays.isNotEmpty(),
+                onClick = {
+                    preferences.edit()
+                        .putString("${preferenceKey}_days", selectedDays.sorted().joinToString(","))
+                        .putString("${preferenceKey}_time", updateTime)
+                        .apply()
+                },
+            ) { Text("Сохранить расписание") }
+        }
+    }
+}
+
+@Composable
+private fun ColumnScope.ReportScreen(
+    report: PeriodReport?,
+    loading: Boolean,
+    error: String?,
+    onGenerate: (String, String) -> Unit,
+) {
+    val today = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) }
+    var dateFrom by rememberSaveable { mutableStateOf(today) }
+    var dateTo by rememberSaveable { mutableStateOf(today) }
+    Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Период отчёта", style = MaterialTheme.typography.titleMedium)
+                WizardDateField("С даты", dateFrom) { dateFrom = it }
+                WizardDateField("По дату", dateTo) { dateTo = it }
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !loading && dateFrom <= dateTo,
+                    onClick = { onGenerate(dateFrom, dateTo) },
+                ) { Text(if (loading) "Формируем…" else "Сформировать отчёт") }
+            }
+        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        report?.let { value ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Финансовый отчёт", style = MaterialTheme.typography.titleMedium)
+                    InformationLine("Выполнено заявок", value.applications_count.toString())
+                    InformationLine("Общая сумма", value.total)
+                    InformationLine("Наличные", value.cash)
+                    InformationLine("Эквайринг", value.card)
+                    HorizontalDivider()
+                    InformationLine(
+                        "Административные расходы",
+                        value.administrative_expenses_status,
+                    )
+                    InformationLine("Начислено метрологу", value.metrologist_gross)
+                    InformationLine("Комиссия банка 5%", value.bank_commission)
+                    InformationLine(
+                        "Административные расходы 15%",
+                        value.administrative_expenses,
+                    )
+                    InformationLine("Итого метрологу", value.metrologist_net)
+                    InformationLine("Итого компании", value.company)
+                }
+            }
+            ReportLinesCard("Предоставленные услуги", value.services, showPayout = true)
+            ReportLinesCard("Расход материалов", value.materials, showPayout = false)
+        }
+    }
+}
+
+@Composable
+private fun ReportLinesCard(
+    title: String,
+    lines: List<ru.zilisnik.mobile.data.ReportLine>,
+    showPayout: Boolean,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            if (lines.isEmpty()) Text("Нет данных за выбранный период")
+            lines.forEachIndexed { index, line ->
+                Text("${index + 1}. ${line.name}")
+                Text(
+                    if (showPayout) {
+                        "Кол-во: ${line.quantity}  |  Цена: ${line.unit_price}  |  Сумма: ${line.total}"
+                    } else {
+                        "Кол-во: ${line.quantity}  |  Сумма: ${line.total}"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (showPayout) {
+                    Text(
+                        "Метрологу начислено: ${line.metrologist_gross}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "Комиссия банка: −${line.bank_commission}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    if (line.administrative_expenses != "0" && line.administrative_expenses != "0.00") {
+                        Text(
+                            "Административные расходы 15%: −${line.administrative_expenses}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Text(
+                        "Итого метрологу: ${line.metrologist_net}  |  Компании: ${line.company}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (index < lines.lastIndex) HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ColumnScope.DocumentationScreen(
+    documents: List<DocumentationItem>,
+    loading: Boolean,
+    error: String?,
+    content: DocumentationContent?,
+    onAdd: (DocumentationCreate) -> Unit,
+    onDelete: (Long) -> Unit,
+    onLoadContent: (Long) -> Unit,
+    onContentHandled: () -> Unit,
+) {
+    val context = LocalContext.current
+    var showEditor by rememberSaveable { mutableStateOf(false) }
+    var title by rememberSaveable { mutableStateOf("") }
+    var comment by rememberSaveable { mutableStateOf("") }
+    var filename by rememberSaveable { mutableStateOf("") }
+    var mimeType by rememberSaveable { mutableStateOf("") }
+    var fileContent by remember { mutableStateOf("") }
+    var pendingAction by remember { mutableStateOf("") }
+    var pendingDownload by remember { mutableStateOf<DocumentationContent?>(null) }
+    var preview by remember { mutableStateOf<ApplicationPhoto?>(null) }
+    var expandedDocumentId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { selected ->
+            readImageContent(context, selected)?.let { (name, encoded) ->
+                val reportedMime = context.contentResolver.getType(selected).orEmpty()
+                val selectedMime = when {
+                    reportedMime == "application/pdf" || name.endsWith(".pdf", true) -> "application/pdf"
+                    reportedMime.startsWith("image/jpeg") || name.endsWith(".jpg", true) ||
+                        name.endsWith(".jpeg", true) -> "image/jpeg"
+                    else -> ""
+                }
+                if (selectedMime.isNotBlank()) {
+                    filename = name
+                    mimeType = selectedMime
+                    fileContent = encoded
+                }
+            }
+        }
+    }
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        val downloaded = pendingDownload
+        if (uri != null && downloaded != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    output.write(Base64.decode(downloaded.content_base64, Base64.DEFAULT))
+                }
+            }
+        }
+        pendingDownload = null
+        pendingAction = ""
+        onContentHandled()
+    }
+    LaunchedEffect(content) {
+        val loaded = content ?: return@LaunchedEffect
+        if (pendingAction == "view") {
+            if (loaded.mime_type.startsWith("image/")) {
+                preview = ApplicationPhoto(
+                    field = "document",
+                    title = loaded.filename,
+                    filename = loaded.filename,
+                    content_base64 = loaded.content_base64,
+                )
+            } else {
+                val directory = java.io.File(context.cacheDir, "documents").apply { mkdirs() }
+                val safeName = loaded.filename.replace(Regex("[^0-9A-Za-zА-Яа-я._-]"), "_")
+                val file = java.io.File(directory, safeName)
+                file.writeBytes(Base64.decode(loaded.content_base64, Base64.DEFAULT))
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, loaded.mime_type)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                runCatching { context.startActivity(intent) }
+            }
+            pendingAction = ""
+            onContentHandled()
+        } else {
+            pendingDownload = loaded
+            saveLauncher.launch(loaded.filename)
+        }
+    }
+    Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { showEditor = !showEditor },
+        ) { Text(if (showEditor) "Закрыть добавление" else "Добавить") }
+        if (showEditor) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Название документа") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { filePicker.launch("*/*") },
+                    ) { Text(if (filename.isBlank()) "Прикрепить PDF или JPEG" else filename) }
+                    OutlinedTextField(
+                        value = comment,
+                        onValueChange = { comment = it },
+                        label = { Text("Комментарий") },
+                        minLines = 3,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = title.isNotBlank() && fileContent.isNotBlank() && !loading,
+                        onClick = {
+                            onAdd(DocumentationCreate(title, comment, filename, mimeType, fileContent))
+                            title = ""; comment = ""; filename = ""; mimeType = ""; fileContent = ""
+                            showEditor = false
+                        },
+                    ) { Text("Сохранить") }
+                }
+            }
+        }
+        if (loading) CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        if (!loading && documents.isEmpty()) Text("Документы ещё не добавлены")
+        documents.forEach { document ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        document.title,
+                        modifier = Modifier.fillMaxWidth(),
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                    if (document.comment.isNotBlank()) Text(document.comment)
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            expandedDocumentId = document.id
+                            pendingAction = "view"
+                            onLoadContent(document.id)
+                        },
+                    ) { Text("Посмотреть") }
+                    if (expandedDocumentId == document.id) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Button(
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    pendingAction = "download"
+                                    onLoadContent(document.id)
+                                },
+                            ) { Text("Скачать") }
+                            Button(
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    expandedDocumentId = null
+                                    onDelete(document.id)
+                                },
+                            ) { Text("Удалить") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    preview?.let { PhotoPreview(it) { preview = null } }
 }
 
 @Composable
@@ -801,6 +1499,7 @@ private fun RegistrationScreen(onRegister: (String, String) -> Unit) {
 @Composable
 private fun ColumnScope.MainScreen(
     profile: UserProfile?,
+    weather: WeatherSnapshot?,
     statusCounts: List<ApplicationStatusCount>,
     applications: List<ApplicationSummary>,
     mapPoints: List<ApplicationMapPoint>,
@@ -808,6 +1507,7 @@ private fun ColumnScope.MainScreen(
     mapError: String?,
     onOpen: (Long) -> Unit,
     onRefresh: () -> Unit,
+    onReorderMapPoints: (Int, Int) -> Unit,
 ) {
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) {
@@ -816,18 +1516,11 @@ private fun ColumnScope.MainScreen(
             delay(1_000)
         }
     }
-    val formatter = remember { SimpleDateFormat("dd.MM.yyyy, HH:mm:ss", Locale("ru")) }
     Column(
         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        AppHeading(profile?.full_name?.ifBlank { profile.login } ?: "Метролог")
-        Text(
-            formatter.format(now),
-            style = MaterialTheme.typography.titleLarge,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        WeatherDashboard(weather, now)
         AppHeading("Статистика на сегодня")
         StatusCard(
             "Новые",
@@ -860,6 +1553,74 @@ private fun ColumnScope.MainScreen(
             error = mapError,
             onOpen = onOpen,
         )
+        if (mapPoints.isNotEmpty()) {
+            RouteCardsSelector(
+                points = mapPoints,
+                onMove = onReorderMapPoints,
+                onOpen = onOpen,
+            )
+        }
+    }
+}
+
+@Composable
+private fun WeatherDashboard(weather: WeatherSnapshot?, now: Date) {
+    val time = remember(now) { SimpleDateFormat("HH:mm:ss", Locale("ru")).format(now) }
+    val date = remember(now) { SimpleDateFormat("dd.MM.yyyy", Locale("ru")).format(now) }
+    val temperature = weather?.temperature?.let {
+        String.format(Locale("ru"), "%.1f °C", it)
+    } ?: "—"
+    val humidity = weather?.humidity?.let { "${it.roundToInt()} %" } ?: "—"
+    val pressure = weather?.pressure_mm_hg?.let {
+        String.format(Locale("ru"), "%.0f мм", it)
+    } ?: "—"
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            DashboardCell("Город", "г. Москва", Modifier.weight(1f))
+            DashboardCell("Время (МСК)", time, Modifier.weight(1f))
+            DashboardCell("Дата", date, Modifier.weight(1f))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            DashboardCell("Влажность", humidity, Modifier.weight(1f))
+            DashboardCell("Температура", temperature, Modifier.weight(1f))
+            DashboardCell("Давление", pressure, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun DashboardCell(title: String, value: String, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier.height(76.dp),
+        containerColor = Color.White,
+        border = BorderStroke(1.dp, CubusButtonColor),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelSmall,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -921,6 +1682,121 @@ private fun ApplicationMapCard(
 }
 
 @Composable
+private fun RouteCardsSelector(
+    points: List<ApplicationMapPoint>,
+    onMove: (Int, Int) -> Unit,
+    onOpen: (Long) -> Unit,
+) {
+    var commentPoint by remember { mutableStateOf<ApplicationMapPoint?>(null) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        containerColor = Color.White,
+        border = BorderStroke(1.dp, CubusButtonColor),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("Порядок маршрута", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Удерживайте заявку и перемещайте её вверх или вниз",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            points.forEachIndexed { index, point ->
+                var dragOffset by remember(point.application_id) { mutableStateOf(0f) }
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer { translationY = dragOffset }
+                        .pointerInput(point.application_id, points.size) {
+                            detectDragGesturesAfterLongPress(
+                                onDragEnd = {
+                                    val rowHeight = 72.dp.toPx()
+                                    val shift = (dragOffset / rowHeight).roundToInt()
+                                    val target = (index + shift).coerceIn(points.indices)
+                                    dragOffset = 0f
+                                    if (target != index) onMove(index, target)
+                                },
+                                onDragCancel = { dragOffset = 0f },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragOffset += dragAmount.y
+                                },
+                            )
+                        }
+                        .clickable { onOpen(point.application_id) },
+                    containerColor = Color.White,
+                    border = BorderStroke(1.dp, CubusButtonColor),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(CubusButtonColor, RoundedCornerShape(6.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                (index + 1).toString(),
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(
+                                point.address,
+                                style = MaterialTheme.typography.titleSmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                listOfNotNull(
+                                    point.interval.ifBlank { point.delivery_time }
+                                        .takeIf { it.isNotBlank() },
+                                    "№${point.number}",
+                                ).joinToString("   "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray,
+                            )
+                            if (point.comments.isNotBlank()) {
+                                Text(
+                                    "Комментарий: ${point.comments}",
+                                    modifier = Modifier.fillMaxWidth().clickable {
+                                        commentPoint = point
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = CubusButtonColor,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        Text("☰", color = CubusButtonColor, fontSize = 22.sp)
+                    }
+                }
+            }
+        }
+    }
+    commentPoint?.let { point ->
+        AlertDialog(
+            onDismissRequest = { commentPoint = null },
+            title = { Text("Комментарий к заявке №${point.number}") },
+            text = { Text(point.comments) },
+            confirmButton = {
+                Button(onClick = { commentPoint = null }) { Text("Закрыть") }
+            },
+        )
+    }
+}
+
+@Composable
 private fun ApplicationsMap(
     points: List<ApplicationMapPoint>,
     homeAddress: String,
@@ -928,6 +1804,8 @@ private fun ApplicationsMap(
     homeLongitude: Double?,
     onOpen: (Long) -> Unit,
 ) {
+    val context = LocalContext.current
+    var routeRequest by remember { mutableStateOf<NativeMapLocation?>(null) }
     AndroidView(
         modifier = Modifier.fillMaxWidth().height(260.dp),
         factory = { context -> NativeOsmMapView(context) },
@@ -938,9 +1816,36 @@ private fun ApplicationsMap(
                 homeLongitude = homeLongitude,
                 applications = points,
                 onOpen = onOpen,
+                onRoute = { routeRequest = it },
+                onCall = { phone ->
+                    val normalized = phone.filter { it.isDigit() || it == '+' }
+                    if (normalized.isNotBlank()) {
+                        context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$normalized")))
+                    }
+                },
             )
         },
     )
+    routeRequest?.let { location ->
+        AlertDialog(
+            onDismissRequest = { routeRequest = null },
+            title = { Text("Проложить маршрут?") },
+            text = { Text(location.address) },
+            confirmButton = {
+                Button(onClick = {
+                    val label = Uri.encode(location.address)
+                    val uri = Uri.parse(
+                        "geo:${location.latitude},${location.longitude}?q=${location.latitude},${location.longitude}($label)",
+                    )
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+                    routeRequest = null
+                }) { Text("Да") }
+            },
+            dismissButton = {
+                TextButton(onClick = { routeRequest = null }) { Text("Нет") }
+            },
+        )
+    }
 }
 
 private data class NativeMapLocation(
@@ -948,6 +1853,12 @@ private data class NativeMapLocation(
     val longitude: Double,
     val label: String,
     val applicationId: Long? = null,
+    val isHome: Boolean = false,
+    val applicationNumber: String = "",
+    val interval: String = "",
+    val address: String = "",
+    val phoneNumber: String = "",
+    val clientName: String = "",
 )
 
 private data class ProjectedPoint(val x: Double, val y: Double)
@@ -972,6 +1883,11 @@ private class NativeOsmMapView(context: Context) : View(context) {
     private var locations: List<NativeMapLocation> = emptyList()
     private var screenLocations: List<Pair<NativeMapLocation, ProjectedPoint>> = emptyList()
     private var onOpen: (Long) -> Unit = {}
+    private var onRoute: (NativeMapLocation) -> Unit = {}
+    private var onCall: (String) -> Unit = {}
+    private var hintCloseArea: RectF? = null
+    private var hintAddressArea: RectF? = null
+    private var hintPhoneArea: RectF? = null
     private var zoomOffset = 0
     private var panX = 0.0
     private var panY = 0.0
@@ -979,6 +1895,7 @@ private class NativeOsmMapView(context: Context) : View(context) {
     private var lastTouchY = 0f
     private var touchMoved = false
     private var scaleAccumulator = 1f
+    private var selectedApplicationId: Long? = null
     private val scaleDetector = ScaleGestureDetector(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -1009,11 +1926,24 @@ private class NativeOsmMapView(context: Context) : View(context) {
         homeLongitude: Double?,
         applications: List<ApplicationMapPoint>,
         onOpen: (Long) -> Unit,
+        onRoute: (NativeMapLocation) -> Unit,
+        onCall: (String) -> Unit,
     ) {
         this.onOpen = onOpen
+        this.onRoute = onRoute
+        this.onCall = onCall
         val updated = buildList {
             if (homeLatitude != null && homeLongitude != null) {
-                add(NativeMapLocation(homeLatitude, homeLongitude, "⌂"))
+                // The home address is only the route origin. It never receives
+                // an application sequence number.
+                add(
+                    NativeMapLocation(
+                        latitude = homeLatitude,
+                        longitude = homeLongitude,
+                        label = "",
+                        isHome = true,
+                    ),
+                )
             }
             applications.forEachIndexed { index, point ->
                 add(
@@ -1022,15 +1952,31 @@ private class NativeOsmMapView(context: Context) : View(context) {
                         point.longitude,
                         (index + 1).toString(),
                         point.application_id,
+                        applicationNumber = point.number,
+                        interval = point.interval.ifBlank { point.delivery_time },
+                        address = point.address,
+                        phoneNumber = point.phone_number,
+                        clientName = point.client,
                     ),
                 )
             }
         }
         if (locations != updated) {
+            val samePlaces = locations.map {
+                Triple(it.applicationId, it.latitude, it.longitude)
+            }.toSet() == updated.map {
+                Triple(it.applicationId, it.latitude, it.longitude)
+            }.toSet()
             locations = updated
-            zoomOffset = 0
-            panX = 0.0
-            panY = 0.0
+            if (!samePlaces) {
+                selectedApplicationId = null
+                hintCloseArea = null
+                hintAddressArea = null
+                hintPhoneArea = null
+                zoomOffset = 0
+                panX = 0.0
+                panY = 0.0
+            }
             invalidate()
         }
         contentDescription = if (homeAddress.isBlank()) "Карта заявок" else "Старт: $homeAddress"
@@ -1047,7 +1993,8 @@ private class NativeOsmMapView(context: Context) : View(context) {
         val originX = centerX - width / 2.0 - panX
         val originY = centerY - height / 2.0 - panY
         drawTiles(canvas, zoom, originX, originY)
-        val screen = projected.map { ProjectedPoint(it.x - originX, it.y - originY) }
+        val rawScreen = projected.map { ProjectedPoint(it.x - originX, it.y - originY) }
+        val screen = separateOverlappingMarkers(rawScreen)
         if (screen.size > 1) {
             val path = Path().apply {
                 moveTo(screen.first().x.toFloat(), screen.first().y.toFloat())
@@ -1055,8 +2002,8 @@ private class NativeOsmMapView(context: Context) : View(context) {
             }
             canvas.drawPath(path, routePaint)
         }
-        locations.zip(screen).forEachIndexed { index, (location, point) ->
-            val isHome = index == 0 && location.applicationId == null
+        locations.zip(screen).forEach { (location, point) ->
+            val isHome = location.isHome
             val radius = (if (isHome) 18f else 15f) * density
             markerPaint.style = Paint.Style.FILL
             markerPaint.color = if (isHome) {
@@ -1069,14 +2016,128 @@ private class NativeOsmMapView(context: Context) : View(context) {
             markerPaint.strokeWidth = 2f * density
             markerPaint.color = if (isHome) android.graphics.Color.WHITE else android.graphics.Color.rgb(43, 90, 120)
             canvas.drawCircle(point.x.toFloat(), point.y.toFloat(), radius, markerPaint)
-            markerTextPaint.color = if (isHome) android.graphics.Color.WHITE else android.graphics.Color.rgb(43, 90, 120)
-            markerTextPaint.textSize = (if (isHome) 20f else 13f) * density
-            val baseline = point.y.toFloat() - (markerTextPaint.ascent() + markerTextPaint.descent()) / 2f
-            canvas.drawText(location.label, point.x.toFloat(), baseline, markerTextPaint)
+            if (isHome) {
+                drawHomeIcon(canvas, point.x.toFloat(), point.y.toFloat())
+            } else {
+                markerTextPaint.color = android.graphics.Color.rgb(43, 90, 120)
+                markerTextPaint.textSize = 13f * density
+                val baseline = point.y.toFloat() -
+                    (markerTextPaint.ascent() + markerTextPaint.descent()) / 2f
+                canvas.drawText(location.label, point.x.toFloat(), baseline, markerTextPaint)
+            }
         }
         screenLocations = locations.zip(screen)
         canvas.drawText("© OpenStreetMap", width - 6f * density, height - 5f * density, attributionPaint)
         drawZoomControls(canvas)
+        selectedApplicationId?.let { selectedId ->
+            val selected = screenLocations.firstOrNull { it.first.applicationId == selectedId }
+            if (selected != null) drawApplicationHint(canvas, selected.first, selected.second)
+        }
+    }
+
+    private fun separateOverlappingMarkers(points: List<ProjectedPoint>): List<ProjectedPoint> {
+        val minimumDistance = 38.0 * density
+        val adjusted = mutableListOf<ProjectedPoint>()
+        points.forEachIndexed { index, point ->
+            var candidate = point
+            var attempt = 0
+            while (adjusted.any { existing ->
+                    val dx = candidate.x - existing.x
+                    val dy = candidate.y - existing.y
+                    dx * dx + dy * dy < minimumDistance * minimumDistance
+                } && attempt < 12
+            ) {
+                val angle = Math.toRadians((attempt * 60.0) - 90.0)
+                val ring = 1 + attempt / 6
+                candidate = ProjectedPoint(
+                    point.x + kotlin.math.cos(angle) * minimumDistance * ring,
+                    point.y + kotlin.math.sin(angle) * minimumDistance * ring,
+                )
+                attempt++
+            }
+            adjusted += candidate
+        }
+        return adjusted
+    }
+
+    private fun drawApplicationHint(
+        canvas: Canvas,
+        location: NativeMapLocation,
+        point: ProjectedPoint,
+    ) {
+        val left = 10f * density
+        val right = width - 10f * density
+        val boxHeight = 126f * density
+        val top = if (point.y > height / 2.0) 10f * density else height - boxHeight - 10f * density
+        markerPaint.style = Paint.Style.FILL
+        markerPaint.color = android.graphics.Color.argb(245, 255, 255, 255)
+        canvas.drawRoundRect(left, top, right, top + boxHeight, 12f * density, 12f * density, markerPaint)
+        markerPaint.style = Paint.Style.STROKE
+        markerPaint.strokeWidth = 1.5f * density
+        markerPaint.color = android.graphics.Color.rgb(43, 90, 120)
+        canvas.drawRoundRect(left, top, right, top + boxHeight, 12f * density, 12f * density, markerPaint)
+        markerTextPaint.textAlign = Paint.Align.LEFT
+        markerTextPaint.color = android.graphics.Color.rgb(23, 33, 38)
+        markerTextPaint.textSize = 13f * density
+        val x = left + 12f * density
+        canvas.drawText(
+            "№ ${location.applicationNumber} | ${location.interval.ifBlank { "интервал не указан" }}",
+            x,
+            top + 24f * density,
+            markerTextPaint,
+        )
+        val address = location.address.let { if (it.length > 43) it.take(42) + "…" else it }
+        markerTextPaint.color = android.graphics.Color.rgb(43, 90, 120)
+        canvas.drawText("Адрес: $address", x, top + 50f * density, markerTextPaint)
+        canvas.drawText(
+            "Телефон: ${location.phoneNumber.ifBlank { "не указан" }}",
+            x,
+            top + 76f * density,
+            markerTextPaint,
+        )
+        val client = location.clientName.let { if (it.length > 40) it.take(39) + "…" else it }
+        canvas.drawText(
+            "Клиент: ${client.ifBlank { "не указан" }}",
+            x,
+            top + 102f * density,
+            markerTextPaint,
+        )
+        hintAddressArea = RectF(left, top + 30f * density, right - 42f * density, top + 61f * density)
+        hintPhoneArea = RectF(left, top + 61f * density, right - 42f * density, top + 89f * density)
+        hintCloseArea = RectF(right - 43f * density, top, right, top + 43f * density)
+        markerPaint.style = Paint.Style.STROKE
+        markerPaint.strokeWidth = 4f * density
+        markerPaint.color = android.graphics.Color.RED
+        val closeCenterX = right - 20f * density
+        val closeCenterY = top + 20f * density
+        val closeSize = 9f * density
+        canvas.drawLine(
+            closeCenterX - closeSize, closeCenterY - closeSize,
+            closeCenterX + closeSize, closeCenterY + closeSize, markerPaint,
+        )
+        canvas.drawLine(
+            closeCenterX + closeSize, closeCenterY - closeSize,
+            closeCenterX - closeSize, closeCenterY + closeSize, markerPaint,
+        )
+        markerTextPaint.textAlign = Paint.Align.CENTER
+    }
+
+    private fun drawHomeIcon(canvas: Canvas, centerX: Float, centerY: Float) {
+        val size = 10f * density
+        val house = Path().apply {
+            moveTo(centerX - size, centerY - size * 0.15f)
+            lineTo(centerX, centerY - size)
+            lineTo(centerX + size, centerY - size * 0.15f)
+            lineTo(centerX + size * 0.72f, centerY - size * 0.15f)
+            lineTo(centerX + size * 0.72f, centerY + size)
+            lineTo(centerX - size * 0.72f, centerY + size)
+            lineTo(centerX - size * 0.72f, centerY - size * 0.15f)
+            close()
+        }
+        markerPaint.style = Paint.Style.STROKE
+        markerPaint.strokeWidth = 2f * density
+        markerPaint.color = android.graphics.Color.WHITE
+        canvas.drawPath(house, markerPaint)
     }
 
     private fun chooseZoom(): Int {
@@ -1202,6 +2263,24 @@ private class NativeOsmMapView(context: Context) : View(context) {
                     return dx * dx + dy * dy <= radius * radius
                 }
                 when {
+                    hintCloseArea?.contains(event.x, event.y) == true -> {
+                        selectedApplicationId = null
+                        hintCloseArea = null
+                        hintAddressArea = null
+                        hintPhoneArea = null
+                        invalidate()
+                    }
+                    hintAddressArea?.contains(event.x, event.y) == true -> {
+                        selectedApplicationId?.let { id ->
+                            locations.firstOrNull { it.applicationId == id }?.let(onRoute)
+                        }
+                    }
+                    hintPhoneArea?.contains(event.x, event.y) == true -> {
+                        selectedApplicationId?.let { id ->
+                            locations.firstOrNull { it.applicationId == id }
+                                ?.phoneNumber?.takeIf(String::isNotBlank)?.let(onCall)
+                        }
+                    }
                     inControl(plusY) -> changeZoom(1)
                     inControl(minusY) -> changeZoom(-1)
                     else -> openApplicationAt(event.x, event.y)
@@ -1221,7 +2300,15 @@ private class NativeOsmMapView(context: Context) : View(context) {
                 val dx = x - point.x.toFloat()
                 val dy = y - point.y.toFloat()
                 dx * dx + dy * dy <= hitRadius * hitRadius
-            }?.first?.applicationId?.let(onOpen)
+            }?.first?.let { location ->
+                val applicationId = location.applicationId ?: return
+                if (selectedApplicationId == applicationId) {
+                    onOpen(applicationId)
+                } else {
+                    selectedApplicationId = applicationId
+                    invalidate()
+                }
+            }
     }
 
     companion object {
@@ -1291,6 +2378,7 @@ private fun ColumnScope.ProfileScreen(
     onMonthSelect: (Int) -> Unit,
     onRefreshSchedule: () -> Unit,
     onSaveHomeAddress: (String) -> Unit,
+    onSaveAdministrativeExpenses: (String) -> Unit,
 ) {
     val context = LocalContext.current
     var homeAddress by remember(profile?.home_address) {
@@ -1315,6 +2403,20 @@ private fun ColumnScope.ProfileScreen(
                 ProfileLine("График работы", profile?.work_schedule)
                 ProfileLine("Max кол-во заявок", profile?.max_applications)
                 ProfileLine("Номер Папки", profile?.folder_number)
+                Text("Административные расходы", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf("Да", "Нет").forEach { value ->
+                        FilterChip(
+                            label = { Text(value) },
+                            selected = profile?.administrative_expenses == value,
+                            onClick = { onSaveAdministrativeExpenses(value) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = homeAddress,
                     onValueChange = { homeAddress = it },
@@ -1540,7 +2642,6 @@ private fun ColumnScope.ApplicationsScreen(
     onComplete: (Long) -> Unit,
     onRework: (Long) -> Unit,
 ) {
-    AppHeading("Новые заявки")
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1657,8 +2758,12 @@ private fun ColumnScope.CompletionWizardScreen(
     meterCatalogError: String?,
     nomenclatureLoading: Boolean,
     nomenclatureError: String?,
+    photoLoadingKey: String?,
+    photoLoadError: String?,
     onBack: () -> Unit,
     onUploadPhoto: (Long, String, String, String) -> Unit,
+    onDeletePhoto: (Long, String, String) -> Unit,
+    onLoadPhoto: (Long, String, String) -> Unit,
     onAddNomenclature: (Long, Long, Int, String?) -> Unit,
     onDeleteNomenclature: (Long, Long) -> Unit,
     onAddMeter: (Long, AddMeterRequest, (WaterMeter) -> Unit) -> Unit,
@@ -1696,6 +2801,7 @@ private fun ColumnScope.CompletionWizardScreen(
     var cardSum by rememberSaveable(details.id) { mutableStateOf("0") }
     var serviceMenu by remember { mutableStateOf(false) }
     var materialMenu by remember { mutableStateOf(false) }
+    val wizardScrollState = rememberScrollState()
     val context = LocalContext.current
     val currentPhotoType = photoTypes[photoIndex.coerceIn(0, photoTypes.lastIndex)]
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -1750,6 +2856,10 @@ private fun ColumnScope.CompletionWizardScreen(
                 "Эквайринг" -> { cashSum = "0"; cardSum = nomenclatureTotal.toString() }
             }
         }
+    }
+
+    LaunchedEffect(step) {
+        wizardScrollState.scrollTo(0)
     }
 
     LaunchedEffect(ipuStatus, lastCheck, mpiYears) {
@@ -1811,7 +2921,7 @@ private fun ColumnScope.CompletionWizardScreen(
     )
 
     Column(
-        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        modifier = Modifier.weight(1f).verticalScroll(wizardScrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         AppHeading("Завершение заявки: шаг ${step + 1} из 5")
@@ -1864,6 +2974,15 @@ private fun ColumnScope.CompletionWizardScreen(
                         }
                     }
                 }
+                AppHeading("Загруженные фотографии")
+                WizardPhotoGallery(
+                    applicationId = details.id,
+                    photos = details.photos.filter { it.field != "f12800" },
+                    loadingKey = photoLoadingKey,
+                    loadError = photoLoadError,
+                    onLoad = onLoadPhoto,
+                    onDelete = onDeletePhoto,
+                )
             }
 
             1 -> {
@@ -1876,30 +2995,34 @@ private fun ColumnScope.CompletionWizardScreen(
                     )
                     details.nomenclature.isEmpty() -> Text("Позиции пока не добавлены")
                 }
-                details.nomenclature.forEach { item ->
+                details.nomenclature.forEachIndexed { index, item ->
                     Card(Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier.padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Text(
-                                "Наименование",
-                                style = MaterialTheme.typography.labelLarge.copy(
-                                    fontSize = 16.sp,
-                                ),
-                            )
-                            Text(item.name, style = MaterialTheme.typography.titleMedium)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "${index + 1}. ${item.name}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Image(
+                                    painter = painterResource(R.drawable.delete_icon),
+                                    contentDescription = "Удалить позицию",
+                                    modifier = Modifier.size(38.dp).clickable {
+                                        onDeleteNomenclature(details.id, item.id)
+                                    },
+                                )
+                            }
                             HorizontalDivider()
                             Text(
                                 "Цена ${item.price}  |  Кол-во ${item.quantity}  |  Сумма ${item.total}",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
-                            Button(
-                                modifier = Modifier.fillMaxWidth(),
-                                onClick = { onDeleteNomenclature(details.id, item.id) },
-                            ) {
-                                Text("Удалить позицию")
-                            }
                         }
                     }
                 }
@@ -2029,10 +3152,24 @@ private fun ColumnScope.CompletionWizardScreen(
 
             2 -> {
                 AppHeading("Добавление ИПУ")
-                Text(
-                    "Поиск в справочнике по номеру в госреестре или обозначению типа СИ",
-                    style = MaterialTheme.typography.labelLarge,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(
+                        modifier = Modifier.weight(1f),
+                        selected = waterKind == "ИПУ ХВС",
+                        onClick = { waterKind = "ИПУ ХВС" },
+                        label = { Text("Холодная вода") },
+                    )
+                    FilterChip(
+                        modifier = Modifier.weight(1f),
+                        selected = waterKind == "ИПУ ГВС",
+                        onClick = { waterKind = "ИПУ ГВС" },
+                        label = { Text("Горячая вода") },
+                    )
+                }
+                Text("Для поиска введите:", style = MaterialTheme.typography.titleMedium)
                 val normalizedSearch = meterSearch.trim()
                 val catalogMatches = if (normalizedSearch.length < 2) {
                     emptyList()
@@ -2077,7 +3214,10 @@ private fun ColumnScope.CompletionWizardScreen(
                         }
                     }
                 }
-                TextButton(onClick = { showRussianKeyboard = !showRussianKeyboard }) {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { showRussianKeyboard = !showRussianKeyboard },
+                ) {
                     Text(if (showRussianKeyboard) "Скрыть русские буквы" else "Показать русские буквы")
                 }
                 if (showRussianKeyboard) {
@@ -2093,36 +3233,22 @@ private fun ColumnScope.CompletionWizardScreen(
                 if (normalizedSearch.length >= 2 && catalogMatches.isEmpty() && meterCatalogError == null) {
                     Text("Совпадения не найдены")
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = waterKind == "ИПУ ХВС",
-                        onClick = { waterKind = "ИПУ ХВС" },
-                        label = { Text("Холодная вода") },
-                    )
-                    FilterChip(
-                        selected = waterKind == "ИПУ ГВС",
-                        onClick = { waterKind = "ИПУ ГВС" },
-                        label = { Text("Горячая вода") },
-                    )
-                }
                 WizardField("Тип СИ", meterType) { meterType = it }
                 WizardField("Серийный номер", serialNumber) { serialNumber = it }
                 WizardField("Номер в госреестре", registryNumber) { registryNumber = it }
                 WizardField("Год выпуска", meterYear) { meterYear = it }
-                Text("Статус ИПУ", style = MaterialTheme.typography.labelLarge)
-                Box {
-                    Button(onClick = { statusMenu = true }) { Text(ipuStatus) }
-                    DropdownMenu(statusMenu, { statusMenu = false }) {
-                        listOf("Новый", "Годен", "Не Годен").forEach { status ->
-                            DropdownMenuItem(
-                                text = { Text(status) },
-                                onClick = {
-                                    ipuStatus = status
-                                    statusMenu = false
-                                    replacementDone = false
-                                },
-                            )
-                        }
+                AppHeading("Статус ИПУ")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf("Годен", "Новый", "Не Годен").forEach { status ->
+                        FilterChip(
+                            modifier = Modifier.weight(1f),
+                            selected = ipuStatus == status,
+                            onClick = { ipuStatus = status; replacementDone = false },
+                            label = { Text(status) },
+                        )
                     }
                 }
                 when (ipuStatus) {
@@ -2131,23 +3257,34 @@ private fun ColumnScope.CompletionWizardScreen(
                     }
                     "Годен" -> {
                         VerificationDateWithToday("Дата последней поверки", lastCheck) { lastCheck = it }
-                        Text("Межповерочный интервал", style = MaterialTheme.typography.labelLarge)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(4, 5, 6).forEach { years ->
-                                FilterChip(
-                                    selected = mpiYears == years,
-                                    onClick = { mpiYears = years },
-                                    label = { Text("$years лет") },
+                        AppHeading("Межповерочный интервал")
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    listOf(4, 5, 6).forEach { years ->
+                                        FilterChip(
+                                            modifier = Modifier.weight(1f),
+                                            selected = mpiYears == years,
+                                            onClick = { mpiYears = years },
+                                            label = { Text("$years лет") },
+                                        )
+                                    }
+                                }
+                                OutlinedTextField(
+                                    value = nextCheck,
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("Дата очередной поверки") },
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
                             }
                         }
-                        OutlinedTextField(
-                            value = nextCheck,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Дата очередной поверки") },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
                     }
                     else -> {
                         VerificationDateWithToday("Дата последней поверки", lastCheck) { lastCheck = it }
@@ -2157,12 +3294,19 @@ private fun ColumnScope.CompletionWizardScreen(
                         }
                     }
                 }
-                Text("Фото прибора обязательно", style = MaterialTheme.typography.labelLarge)
-                Button(onClick = { devicePhotoPicker.launch("image/*") }) {
-                    Text(if (devicePhotoName.isBlank()) "Добавить фото прибора *" else "Фото: $devicePhotoName")
-                }
-                Button(onClick = { passportPhotoPicker.launch("image/*") }) {
-                    Text(if (passportPhotoName.isBlank()) "Добавить фото паспорта" else "Паспорт: $passportPhotoName")
+                AppHeading("Фото прибора")
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Button(modifier = Modifier.weight(1f), onClick = { devicePhotoPicker.launch("image/*") }) {
+                            Text(if (devicePhotoName.isBlank()) "Фото прибора *" else "Фото выбрано")
+                        }
+                        Button(modifier = Modifier.weight(1f), onClick = { passportPhotoPicker.launch("image/*") }) {
+                            Text(if (passportPhotoName.isBlank()) "Фото паспорта" else "Паспорт выбран")
+                        }
+                    }
                 }
                 val requiredPhotoReady = devicePhotoName.isNotBlank() &&
                     (editingMeterId != null || devicePhotoBase64.isNotBlank())
@@ -2172,6 +3316,7 @@ private fun ColumnScope.CompletionWizardScreen(
                     else -> lastCheck.isNotBlank()
                 }
                 Button(
+                    modifier = Modifier.fillMaxWidth(),
                     enabled = meterType.isNotBlank() && serialNumber.isNotBlank() &&
                         requiredPhotoReady && datesReady,
                     onClick = {
@@ -2190,13 +3335,6 @@ private fun ColumnScope.CompletionWizardScreen(
                 ) { Text(if (editingMeterId == null) "Добавить ИПУ" else "Сохранить изменения") }
                 if (editingMeterId != null) {
                     TextButton(onClick = { clearMeterForm() }) { Text("Отменить редактирование") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BackIconButton(onClick = { step = 1 })
-                    Button(
-                        enabled = sessionMeterIds.isNotEmpty() && editingMeterId == null,
-                        onClick = { step = 3 },
-                    ) { Text("Продолжить") }
                 }
                 val sessionMeters = details.water_meters.filter { it.id in sessionMeterIds }
                 SessionMeterList(
@@ -2221,6 +3359,11 @@ private fun ColumnScope.CompletionWizardScreen(
                         }
                     },
                 )
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = sessionMeterIds.isNotEmpty() && editingMeterId == null,
+                    onClick = { step = 3 },
+                ) { Text("Продолжить") }
             }
 
             3 -> {
@@ -2264,31 +3407,56 @@ private fun ColumnScope.CompletionWizardScreen(
                 }
                 val paymentValid = paymentType != "Эквайринг + Наличные" ||
                     (cashSum.toIntOrNull() ?: 0) + (cardSum.toIntOrNull() ?: 0) == nomenclatureTotal
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BackIconButton(onClick = { step = 2 })
-                    Button(enabled = paymentValid, onClick = { step = 4 }) {
-                        Text("Сформировать отчёт")
-                    }
-                }
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = paymentValid,
+                    onClick = { step = 4 },
+                ) { Text("Сформировать отчёт") }
             }
 
             else -> {
                 AppHeading("Итоговый отчёт")
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        InformationLine("Заявка", "№ ${details.number}")
-                        InformationLine("Клиент", details.client)
+                        InformationLine("Номер заявки", "№ ${details.number}")
+                        InformationLine("Контакты клиента", listOf(details.client, details.phone_number, details.phone_number_2).filter(String::isNotBlank).joinToString(" | "))
                         InformationLine("Адрес", details.address)
-                        InformationLine("Фотографии", details.photos.size.toString())
-                        details.photos.forEach { Text("• ${it.title}: ${it.filename}") }
-                        InformationLine("Номенклатура", details.nomenclature.size.toString())
-                        details.nomenclature.forEach {
-                            Text("• ${it.name}: ${it.quantity} × ${it.price} = ${it.total}")
+                    }
+                }
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("Фото документов", style = MaterialTheme.typography.titleMedium)
+                        WizardPhotoGallery(
+                            applicationId = details.id,
+                            photos = details.photos.filter { it.field != "f12800" },
+                            loadingKey = photoLoadingKey,
+                            loadError = photoLoadError,
+                            onLoad = onLoadPhoto,
+                        )
+                    }
+                }
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("Номенклатура", style = MaterialTheme.typography.titleMedium)
+                        details.nomenclature.forEachIndexed { index, item ->
+                            Text("${index + 1}. ${item.name} | ${item.quantity} × ${item.price} = ${item.total}")
                         }
-                        InformationLine("ИПУ на адресе", details.water_meters.size.toString())
-                        details.water_meters.forEach {
-                            Text("• ${it.device_kind}: ${it.meter_type}, № ${it.serial_number}")
+                        HorizontalDivider()
+                        Text("Общий итог: $nomenclatureTotal", style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("Приборы", style = MaterialTheme.typography.titleMedium)
+                        details.water_meters.forEachIndexed { index, meter ->
+                            Text("${index + 1}. ${meter.device_kind}: ${meter.meter_type} | ГрСИ ${meter.registry_number} | SN ${meter.serial_number}")
+                            Text("Поверка: ${meter.last_check.ifBlank { "—" }} → ${meter.next_check.ifBlank { "—" }}")
                         }
+                    }
+                }
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("Вид оплаты", style = MaterialTheme.typography.titleMedium)
                         InformationLine("Вид оплаты", paymentType)
                         InformationLine("Наличные", cashSum.ifBlank { "0" })
                         InformationLine("Эквайринг", cardSum.ifBlank { "0" })
@@ -2298,20 +3466,83 @@ private fun ColumnScope.CompletionWizardScreen(
                     "После подтверждения заявка перейдёт в статус «Выполнено».",
                     color = MaterialTheme.colorScheme.primary,
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BackIconButton(onClick = { step = 3 })
-                    Button(onClick = {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
                         onConfirm(
                             details.id,
                             paymentType,
                             cashSum.toIntOrNull() ?: 0,
                             cardSum.toIntOrNull() ?: 0,
                         )
-                    }) { Text("Подтвердить и завершить") }
+                    },
+                ) { Text("Подтвердить и разрешить") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WizardPhotoGallery(
+    applicationId: Long,
+    photos: List<ApplicationPhoto>,
+    loadingKey: String?,
+    loadError: String?,
+    onLoad: (Long, String, String) -> Unit,
+    onDelete: ((Long, String, String) -> Unit)? = null,
+) {
+    var preview by remember { mutableStateOf<ApplicationPhoto?>(null) }
+    var pending by remember { mutableStateOf<ApplicationPhoto?>(null) }
+    LaunchedEffect(photos, loadingKey) {
+        val requested = pending ?: return@LaunchedEffect
+        val loaded = photos.firstOrNull {
+            it.field == requested.field && it.filename == requested.filename && it.content_base64.isNotBlank()
+        }
+        if (loaded != null) {
+            preview = loaded
+            pending = null
+        }
+    }
+    if (photos.isEmpty()) Text("Фотографии ещё не загружены")
+    photos.forEachIndexed { index, photo ->
+        Card(
+            modifier = Modifier.fillMaxWidth().clickable {
+                if (photo.content_base64.isNotBlank()) {
+                    preview = photo
+                } else {
+                    pending = photo
+                    onLoad(applicationId, photo.field, photo.filename)
+                }
+            },
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("${index + 1}.", style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.weight(1f)) {
+                    Text(photo.title, style = MaterialTheme.typography.titleMedium)
+                    Text(photo.filename, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    if (loadingKey == "${photo.field}\u0000${photo.filename}") "Загрузка…" else "Открыть",
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (onDelete != null) {
+                    Image(
+                        painter = painterResource(R.drawable.delete_icon),
+                        contentDescription = "Удалить и заменить фотографию",
+                        modifier = Modifier.size(34.dp).clickable {
+                            onDelete(applicationId, photo.field, photo.filename)
+                        },
+                    )
                 }
             }
         }
     }
+    loadError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    preview?.let { PhotoPreview(it) { preview = null } }
 }
 
 @Composable
@@ -2337,15 +3568,30 @@ private fun SessionMeterList(
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("${index + 1}. ${meter.meter_type}", style = MaterialTheme.typography.titleMedium)
+                InformationLine("Статус ИПУ", meter.status)
+                InformationLine("Тип прибора", meter.meter_type)
                 InformationLine("Серийный номер", meter.serial_number)
                 InformationLine("Номер в госреестре", meter.registry_number)
+                if (meter.last_check.isNotBlank() && !meter.last_check.startsWith("0000-00-00")) {
+                    InformationLine("Дата последней поверки", meter.last_check.substringBefore(" "))
+                }
+                if (meter.next_check.isNotBlank() && !meter.next_check.startsWith("0000-00-00")) {
+                    InformationLine("Дата очередной поверки", meter.next_check.substringBefore(" "))
+                }
                 InformationLine("Фото прибора", meter.device_photo)
                 if (meter.passport_photo.isNotBlank()) {
                     InformationLine("Фото паспорта", meter.passport_photo)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onEdit(meter) }) { Text("Редактировать") }
-                    TextButton(onClick = { onDelete(meter) }) { Text("Удалить") }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(modifier = Modifier.weight(1f), onClick = { onEdit(meter) }) {
+                        Text("Редактировать")
+                    }
+                    Button(modifier = Modifier.weight(1f), onClick = { onDelete(meter) }) {
+                        Text("Удалить")
+                    }
                 }
             }
         }
@@ -2434,17 +3680,59 @@ private fun WizardDateField(label: String, value: String, onChange: (String) -> 
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun VerificationDateWithToday(
     label: String,
     value: String,
     onChange: (String) -> Unit,
 ) {
-    WizardDateField(label, value, onChange)
-    TextButton(
-        onClick = {
-            onChange(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()))
-        },
-    ) { Text("Сегодня") }
+    var showCalendar by remember { mutableStateOf(false) }
+    val pickerState = rememberDatePickerState()
+    AppHeading(label)
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                modifier = Modifier.weight(1f),
+                onClick = { onChange(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) },
+            ) { Text("Сегодня", fontSize = 12.sp) }
+            Button(
+                modifier = Modifier.weight(1f),
+                onClick = { showCalendar = true },
+            ) { Text("Календарь", fontSize = 11.sp) }
+            OutlinedTextField(
+                value = value,
+                onValueChange = {},
+                readOnly = true,
+                placeholder = { Text("Дата", fontSize = 12.sp) },
+                textStyle = MaterialTheme.typography.bodySmall,
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+    if (showCalendar) {
+        DatePickerDialog(
+            onDismissRequest = { showCalendar = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let { millis ->
+                        val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                            timeZone = TimeZone.getTimeZone("UTC")
+                        }
+                        onChange(formatter.format(Date(millis)))
+                    }
+                    showCalendar = false
+                }) { Text("Выбрать") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCalendar = false }) { Text("Отмена") }
+            },
+        ) { DatePicker(state = pickerState) }
+    }
 }
 
 private fun calculateNextVerification(lastCheck: String, years: Int): String {
@@ -2591,7 +3879,7 @@ private fun ColumnScope.DetailsScreen(
             item {
                 CollapsibleSection(
                     title = "Холодная вода",
-                    headerColor = CubusBlockColor,
+                    headerColor = ColdWaterHeaderColor,
                     initiallyExpanded = false,
                     compactHeader = true,
                 ) {
@@ -2602,7 +3890,7 @@ private fun ColumnScope.DetailsScreen(
             item {
                 CollapsibleSection(
                     title = "Горячая вода",
-                    headerColor = CubusBlockColor,
+                    headerColor = HotWaterHeaderColor,
                     initiallyExpanded = false,
                     compactHeader = true,
                 ) {
@@ -2803,7 +4091,6 @@ private val photoTypes = listOf(
     "f12770" to "Акт замены",
     "f12780" to "Квитанция",
     "f12790" to "Счёт-договор",
-    "f12800" to "Счётчики",
     "f14000" to "Кассовый чек",
     "f17630" to "Акт контрольного снятия показаний",
 )
@@ -3055,18 +4342,96 @@ private fun openWebPage(context: Context, url: String) {
 @Composable
 private fun WaterMeterCard(meter: WaterMeter) {
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                meter.device_kind.ifBlank { "Прибор № ${meter.id}" },
-                style = MaterialTheme.typography.titleMedium,
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            MeterGridRow(
+                "ИПУ" to meter.device_kind
+                    .replace("ИПУ", "", ignoreCase = true)
+                    .trim()
+                    .ifBlank { "№ ${meter.id}" },
+                "Тип СИ" to meter.meter_type,
             )
-            InformationLine("Тип СИ", meter.meter_type)
-            InformationLine("Серийный номер", meter.serial_number)
-            InformationLine("Номер в госреестре", meter.registry_number)
-            InformationLine("Год выпуска", meter.year)
-            InformationLine("Дата последней поверки", meter.last_check)
-            InformationLine("Дата очередной поверки", meter.next_check)
-            InformationLine("Статус", meter.status)
+            HorizontalDivider()
+            MeterGridRow(
+                "Номер в госреестре" to meter.registry_number,
+                "Год выпуска" to meter.year,
+            )
+            HorizontalDivider()
+            MeterGridRow(
+                "Серийный номер" to meter.serial_number,
+                "Статус" to meter.status,
+            )
+            HorizontalDivider()
+            MeterGridRow(
+                "Последняя поверка" to displayMeterDate(meter.last_check),
+                "Очередная поверка" to displayMeterDate(meter.next_check),
+            )
+            HorizontalDivider()
+            MeterWideRow("Отправка в Аршин", meter.replacement)
         }
     }
+}
+
+@Composable
+private fun MeterWideRow(title: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.labelMedium,
+            color = CubusButtonColor,
+        )
+        Box(
+            Modifier.width(1.dp).height(30.dp).background(CubusButtonColor.copy(alpha = 0.35f)),
+        )
+        Text(
+            value.ifBlank { "—" },
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+@Composable
+private fun MeterGridRow(
+    left: Pair<String, String>,
+    right: Pair<String, String>,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        MeterGridCell(left.first, left.second, Modifier.weight(1f))
+        Box(
+            Modifier.width(1.dp).height(42.dp).background(CubusButtonColor.copy(alpha = 0.35f)),
+        )
+        MeterGridCell(right.first, right.second, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun MeterGridCell(title: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelMedium,
+            color = CubusButtonColor,
+            maxLines = 2,
+        )
+        Text(
+            value.ifBlank { "—" },
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun displayMeterDate(value: String): String {
+    val date = value.trim().substringBefore(" ")
+    return if (date.isBlank() || date.startsWith("0000-00-00")) "—" else date
 }

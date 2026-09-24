@@ -6,6 +6,7 @@ from .auth import create_access_token, current_user
 from .client_base import ClientBaseClient, ClientBaseError
 from .config import Settings, get_settings
 from .dependencies import get_client_base
+from .document_store import document_store
 from .models import (
     ApplicationDetails,
     ApplicationMapPoint,
@@ -15,6 +16,10 @@ from .models import (
     AddNomenclatureRequest,
     CloseApplicationRequest,
     EmployeeProfile,
+    AdministrativeExpensesRequest,
+    DocumentationContent,
+    DocumentationCreate,
+    DocumentationItem,
     HomeAddress,
     HomeAddressRequest,
     OperationResult,
@@ -23,12 +28,14 @@ from .models import (
     MaterialUsageItem,
     PhotoContent,
     PriceListItem,
+    PeriodReport,
     ReworkRequest,
     RegisterRequest,
     ScheduleDay,
     TokenResponse,
     UploadPhotoRequest,
     WarehouseItem,
+    WeatherSnapshot,
     WaterMeter,
 )
 
@@ -40,6 +47,53 @@ completed_operations: dict[str, OperationResult] = {}
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/v1/documents", response_model=list[DocumentationItem])
+async def documents(user: dict = Depends(current_user)):
+    return document_store.list(user["sub"])
+
+
+@app.post("/api/v1/documents", response_model=DocumentationItem)
+async def add_document(command: DocumentationCreate, user: dict = Depends(current_user)):
+    try:
+        return document_store.add(user["sub"], command)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/documents/{document_id}/content", response_model=DocumentationContent)
+async def document_content(document_id: int, user: dict = Depends(current_user)):
+    try:
+        return document_store.content(user["sub"], document_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Документ не найден") from exc
+
+
+@app.delete("/api/v1/documents/{document_id}")
+async def delete_document(document_id: int, user: dict = Depends(current_user)):
+    try:
+        document_store.delete(user["sub"], document_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Документ не найден") from exc
+    return {"success": True}
+
+
+@app.get("/api/v1/reports/period", response_model=PeriodReport)
+async def period_report(
+    date_from: date,
+    date_to: date,
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    if date_to < date_from:
+        raise HTTPException(status_code=400, detail="Дата окончания раньше даты начала")
+    if (date_to - date_from).days > 366:
+        raise HTTPException(status_code=400, detail="Максимальный период отчёта — 366 дней")
+    try:
+        return await crm.period_report(user["sub"], date_from, date_to)
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/v1/auth/register", response_model=TokenResponse)
@@ -117,6 +171,34 @@ async def save_home_address(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.post("/api/v1/profile/administrative-expenses", response_model=EmployeeProfile)
+async def save_administrative_expenses(
+    request: AdministrativeExpensesRequest,
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        crm.save_administrative_expenses(
+            user["sub"], request.administrative_expenses
+        )
+        return await crm.employee_profile(
+            user["sub"], user.get("role", ""), user.get("device", "")
+        )
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/weather", response_model=WeatherSnapshot)
+async def weather(
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.current_weather(user["sub"])
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/v1/schedule", response_model=list[ScheduleDay])
 async def schedule(
     year: int,
@@ -147,11 +229,12 @@ async def material_usage(
 
 @app.get("/api/v1/metrolog-warehouse", response_model=list[WarehouseItem])
 async def metrolog_warehouse(
+    refresh: bool = False,
     user: dict = Depends(current_user),
     crm: ClientBaseClient = Depends(get_client_base),
 ):
     try:
-        return await crm.metrolog_warehouse(user["sub"])
+        return await crm.metrolog_warehouse(user["sub"], force_refresh=refresh)
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

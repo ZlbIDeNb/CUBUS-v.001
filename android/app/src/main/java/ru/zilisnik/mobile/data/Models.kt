@@ -31,15 +31,24 @@ data class UserProfile(
     val home_address: String = "",
     val home_latitude: Double? = null,
     val home_longitude: Double? = null,
+    val administrative_expenses: String = "Нет",
     val equipment: List<EmployeeEquipment> = emptyList(),
 )
 
 data class HomeAddressRequest(val address: String)
+data class AdministrativeExpensesRequest(val administrative_expenses: String)
 
 data class HomeAddress(
     val address: String,
     val latitude: Double,
     val longitude: Double,
+)
+
+data class WeatherSnapshot(
+    val city: String = "г. Москва",
+    val temperature: Double? = null,
+    val humidity: Double? = null,
+    val pressure_mm_hg: Double? = null,
 )
 
 data class ApplicationSummary(
@@ -63,6 +72,11 @@ data class ApplicationMapPoint(
     val application_id: Long,
     val number: String,
     val address: String,
+    val interval: String = "",
+    val delivery_time: String = "",
+    val phone_number: String = "",
+    val client: String = "",
+    val comments: String = "",
     val latitude: Double,
     val longitude: Double,
 )
@@ -121,6 +135,58 @@ data class ApplicationPhoto(
 )
 
 data class PhotoContent(val content_base64: String)
+
+data class DocumentationCreate(
+    val title: String,
+    val comment: String,
+    val filename: String,
+    val mime_type: String,
+    val content_base64: String,
+)
+
+data class DocumentationItem(
+    val id: Long,
+    val title: String,
+    val comment: String,
+    val filename: String,
+    val mime_type: String,
+    val created_at: String,
+)
+
+data class DocumentationContent(
+    val filename: String,
+    val mime_type: String,
+    val content_base64: String,
+)
+
+data class ReportLine(
+    val name: String,
+    val quantity: String,
+    val total: String,
+    val unit_price: String = "0",
+    val metrologist_gross: String = "0",
+    val bank_commission: String = "0",
+    val administrative_expenses: String = "0",
+    val metrologist_net: String = "0",
+    val company: String = "0",
+)
+
+data class PeriodReport(
+    val date_from: String,
+    val date_to: String,
+    val applications_count: Int,
+    val total: String,
+    val cash: String,
+    val card: String,
+    val bank_commission: String = "0",
+    val administrative_expenses: String = "0",
+    val administrative_expenses_status: String = "Нет",
+    val metrologist_gross: String = "0",
+    val metrologist_net: String = "0",
+    val company: String = "0",
+    val services: List<ReportLine>,
+    val materials: List<ReportLine>,
+)
 
 data class NomenclatureItem(
     val id: Long,

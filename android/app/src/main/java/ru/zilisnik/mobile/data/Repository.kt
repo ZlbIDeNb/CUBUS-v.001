@@ -42,6 +42,24 @@ class Repository {
 
     suspend fun profile(): UserProfile = api.profile(auth())
 
+    suspend fun weather(): WeatherSnapshot = api.weather(auth())
+
+    suspend fun saveAdministrativeExpenses(value: String): UserProfile =
+        api.saveAdministrativeExpenses(auth(), AdministrativeExpensesRequest(value))
+
+    suspend fun documents(): List<DocumentationItem> = api.documents(auth())
+
+    suspend fun addDocument(request: DocumentationCreate): DocumentationItem =
+        api.addDocument(auth(), request)
+
+    suspend fun documentContent(id: Long): DocumentationContent =
+        api.documentContent(auth(), id)
+
+    suspend fun deleteDocument(id: Long) = api.deleteDocument(auth(), id)
+
+    suspend fun periodReport(dateFrom: String, dateTo: String): PeriodReport =
+        api.periodReport(auth(), dateFrom, dateTo)
+
     suspend fun saveHomeAddress(address: String): HomeAddress =
         try {
             api.saveHomeAddress(auth(), HomeAddressRequest(address.trim()))
@@ -55,8 +73,8 @@ class Repository {
     suspend fun materialUsage(workDate: String): List<MaterialUsageItem> =
         api.materialUsage(auth(), workDate)
 
-    suspend fun metrologWarehouse(): List<WarehouseItem> =
-        api.metrologWarehouse(auth())
+    suspend fun metrologWarehouse(refresh: Boolean = false): List<WarehouseItem> =
+        api.metrologWarehouse(auth(), refresh)
 
     suspend fun applications(status: String, workDate: String): List<ApplicationSummary> =
         api.applications(auth(), status, workDate)

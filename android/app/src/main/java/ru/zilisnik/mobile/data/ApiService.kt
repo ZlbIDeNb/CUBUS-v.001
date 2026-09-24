@@ -9,6 +9,41 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface ApiService {
+    @GET("api/v1/weather")
+    suspend fun weather(
+        @Header("Authorization") authorization: String,
+    ): WeatherSnapshot
+
+    @GET("api/v1/documents")
+    suspend fun documents(
+        @Header("Authorization") authorization: String,
+    ): List<DocumentationItem>
+
+    @POST("api/v1/documents")
+    suspend fun addDocument(
+        @Header("Authorization") authorization: String,
+        @Body request: DocumentationCreate,
+    ): DocumentationItem
+
+    @GET("api/v1/documents/{id}/content")
+    suspend fun documentContent(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+    ): DocumentationContent
+
+    @DELETE("api/v1/documents/{id}")
+    suspend fun deleteDocument(
+        @Header("Authorization") authorization: String,
+        @Path("id") id: Long,
+    )
+
+    @GET("api/v1/reports/period")
+    suspend fun periodReport(
+        @Header("Authorization") authorization: String,
+        @Query("date_from") dateFrom: String,
+        @Query("date_to") dateTo: String,
+    ): PeriodReport
+
     @POST("api/v1/auth/register")
     suspend fun register(@Body request: RegisterRequest): TokenResponse
 
@@ -42,6 +77,12 @@ interface ApiService {
         @Body request: HomeAddressRequest,
     ): HomeAddress
 
+    @POST("api/v1/profile/administrative-expenses")
+    suspend fun saveAdministrativeExpenses(
+        @Header("Authorization") authorization: String,
+        @Body request: AdministrativeExpensesRequest,
+    ): UserProfile
+
     @GET("api/v1/schedule")
     suspend fun schedule(
         @Header("Authorization") authorization: String,
@@ -59,6 +100,7 @@ interface ApiService {
     @GET("api/v1/metrolog-warehouse")
     suspend fun metrologWarehouse(
         @Header("Authorization") authorization: String,
+        @Query("refresh") refresh: Boolean = false,
     ): List<WarehouseItem>
 
     @GET("api/v1/applications/{id}")

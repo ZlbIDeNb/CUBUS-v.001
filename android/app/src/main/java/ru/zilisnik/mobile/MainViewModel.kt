@@ -15,7 +15,11 @@ import ru.zilisnik.mobile.data.ApplicationSummary
 import ru.zilisnik.mobile.data.AddMeterRequest
 import ru.zilisnik.mobile.data.AddNomenclatureRequest
 import ru.zilisnik.mobile.data.CloseApplicationRequest
+import ru.zilisnik.mobile.data.DocumentationContent
+import ru.zilisnik.mobile.data.DocumentationCreate
+import ru.zilisnik.mobile.data.DocumentationItem
 import ru.zilisnik.mobile.data.PriceListItem
+import ru.zilisnik.mobile.data.PeriodReport
 import ru.zilisnik.mobile.data.ReworkRequest
 import ru.zilisnik.mobile.data.MeterCatalogItem
 import ru.zilisnik.mobile.data.MaterialUsageItem
@@ -25,6 +29,7 @@ import ru.zilisnik.mobile.data.ScheduleDay
 import ru.zilisnik.mobile.data.UploadPhotoRequest
 import ru.zilisnik.mobile.data.WaterMeter
 import ru.zilisnik.mobile.data.WarehouseItem
+import ru.zilisnik.mobile.data.WeatherSnapshot
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -43,11 +48,13 @@ data class UiState(
     val materialUsage: List<MaterialUsageItem> = emptyList(),
     val warehouseItems: List<WarehouseItem> = emptyList(),
     val warehouseLoading: Boolean = false,
+    val warehouseLoaded: Boolean = false,
     val warehouseError: String? = null,
     val scheduleDays: List<ScheduleDay> = emptyList(),
     val scheduleMonthOffset: Int = 0,
     val applicationDayOffset: Int = 0,
     val profile: UserProfile? = null,
+    val weather: WeatherSnapshot? = null,
     val homeAddressSaving: Boolean = false,
     val homeAddressError: String? = null,
     val selected: ApplicationDetails? = null,
@@ -64,12 +71,110 @@ data class UiState(
     val reworkApplicationId: Long? = null,
     val reworkReasons: List<String> = emptyList(),
     val reworkError: String? = null,
+    val documents: List<DocumentationItem> = emptyList(),
+    val documentationLoading: Boolean = false,
+    val documentationError: String? = null,
+    val documentContent: DocumentationContent? = null,
+    val report: PeriodReport? = null,
+    val reportLoading: Boolean = false,
+    val reportError: String? = null,
 )
 
 class MainViewModel(private val repository: Repository = Repository()) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
     private var dashboardRefreshRunning = false
+
+    fun loadDocuments() {
+        if (_state.value.documentationLoading) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(documentationLoading = true, documentationError = null)
+            runCatching { repository.documents() }
+                .onSuccess { documents ->
+                    _state.value = _state.value.copy(
+                        documents = documents,
+                        documentationLoading = false,
+                    )
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        documentationLoading = false,
+                        documentationError = error.message ?: "Не удалось загрузить документы",
+                    )
+                }
+        }
+    }
+
+    fun addDocument(request: DocumentationCreate) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(documentationLoading = true, documentationError = null)
+            runCatching { repository.addDocument(request) }
+                .onSuccess { document ->
+                    _state.value = _state.value.copy(
+                        documents = listOf(document) + _state.value.documents,
+                        documentationLoading = false,
+                        message = "Документ сохранён",
+                    )
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        documentationLoading = false,
+                        documentationError = error.message ?: "Не удалось сохранить документ",
+                    )
+                }
+        }
+    }
+
+    fun deleteDocument(id: Long) {
+        viewModelScope.launch {
+            runCatching { repository.deleteDocument(id) }
+                .onSuccess {
+                    _state.value = _state.value.copy(
+                        documents = _state.value.documents.filterNot { it.id == id },
+                        message = "Документ удалён",
+                    )
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        documentationError = error.message ?: "Не удалось удалить документ",
+                    )
+                }
+        }
+    }
+
+    fun loadDocumentContent(id: Long) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(documentContent = null, documentationError = null)
+            runCatching { repository.documentContent(id) }
+                .onSuccess { content -> _state.value = _state.value.copy(documentContent = content) }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        documentationError = error.message ?: "Не удалось скачать документ",
+                    )
+                }
+        }
+    }
+
+    fun clearDocumentContent() {
+        _state.value = _state.value.copy(documentContent = null)
+    }
+
+    fun generateReport(dateFrom: String, dateTo: String) {
+        if (_state.value.reportLoading) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(reportLoading = true, reportError = null, report = null)
+            runCatching { repository.periodReport(dateFrom, dateTo) }
+                .onSuccess { report ->
+                    _state.value = _state.value.copy(report = report, reportLoading = false)
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        reportLoading = false,
+                        reportError = error.message ?: "Не удалось сформировать отчёт",
+                    )
+                }
+        }
+    }
 
     fun register(code: String, deviceName: String) {
         viewModelScope.launch {
@@ -126,23 +231,15 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
                 val catalogJob = async {
                     runCatching { repository.meterCatalog("") }
                 }
-                val warehouseJob = async {
-                    runCatching { repository.metrologWarehouse() }
-                        .onFailure { warnings += "склад метролога временно недоступен" }
-                        .getOrDefault(emptyList())
-                }
-
                 scheduleJob.await()
                 dashboardJob.await()
                 applicationsJob.await()
                 val prices = pricesJob.await()
                 val catalogResult = catalogJob.await()
-                val warehouse = warehouseJob.await()
                 _state.value = _state.value.copy(
                     priceList = prices,
                     meterCatalog = catalogResult.getOrDefault(emptyList()),
                     meterCatalogError = catalogResult.exceptionOrNull()?.message,
-                    warehouseItems = warehouse,
                     message = warnings.takeIf { it.isNotEmpty() }
                         ?.joinToString(prefix = "Вход выполнен, но ", separator = ", "),
                 )
@@ -270,7 +367,7 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
         }
     }
 
-    fun loadWarehouse() {
+    fun loadWarehouse(forceRefresh: Boolean = true) {
         if (_state.value.warehouseLoading) return
         viewModelScope.launch {
             _state.value = _state.value.copy(
@@ -278,10 +375,11 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
                 warehouseError = null,
             )
             try {
-                val items = repository.metrologWarehouse()
+                val items = repository.metrologWarehouse(refresh = forceRefresh)
                 _state.value = _state.value.copy(
                     warehouseItems = items,
                     warehouseLoading = false,
+                    warehouseLoaded = true,
                     warehouseError = null,
                 )
             } catch (error: Exception) {
@@ -291,6 +389,10 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
                 )
             }
         }
+    }
+
+    fun ensureWarehouseLoaded() {
+        if (!_state.value.warehouseLoaded) loadWarehouse(forceRefresh = false)
     }
 
     fun loadPriceList() {
@@ -509,12 +611,14 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
             )
             try {
                 val home = repository.saveHomeAddress(address)
+                val weather = runCatching { repository.weather() }.getOrNull()
                 _state.value = _state.value.copy(
                     profile = _state.value.profile?.copy(
                         home_address = home.address,
                         home_latitude = home.latitude,
                         home_longitude = home.longitude,
                     ),
+                    weather = weather ?: _state.value.weather,
                     homeAddressSaving = false,
                     message = "Домашний адрес и координаты сохранены",
                 )
@@ -525,6 +629,34 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
                 )
             }
         }
+    }
+
+    fun saveAdministrativeExpenses(value: String) {
+        if (value !in setOf("Да", "Нет")) return
+        viewModelScope.launch {
+            runCatching { repository.saveAdministrativeExpenses(value) }
+                .onSuccess { profile ->
+                    _state.value = _state.value.copy(
+                        profile = profile,
+                        message = "Настройка административных расходов сохранена",
+                    )
+                }
+                .onFailure { error ->
+                    _state.value = _state.value.copy(
+                        message = error.message ?: "Не удалось сохранить настройку",
+                    )
+                }
+        }
+    }
+
+    fun reorderMapPoints(from: Int, to: Int) {
+        val points = _state.value.applicationMapPoints
+        if (from !in points.indices || to !in points.indices || from == to) return
+        _state.value = _state.value.copy(
+            applicationMapPoints = points.toMutableList().apply {
+                add(to, removeAt(from))
+            },
+        )
     }
 
     fun prepareRework(id: Long) = run {
@@ -581,8 +713,10 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
             async { repository.applications(status, day) }
         }
         val mapJob = async { runCatching { repository.applicationMapPoints(day) } }
+        val weatherJob = async { runCatching { repository.weather() } }
         val grouped = applicationJobs.mapValues { (_, job) -> job.await() }
         val mapResult = mapJob.await()
+        val weatherResult = weatherJob.await()
         _state.value = _state.value.copy(
             todayStatusCounts = statuses.map { status ->
                 ApplicationStatusCount(status, grouped[status].orEmpty().size)
@@ -591,6 +725,7 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
             applicationMapPoints = mapResult.getOrDefault(emptyList()),
             applicationMapLoading = false,
             applicationMapError = mapResult.exceptionOrNull()?.message,
+            weather = weatherResult.getOrNull() ?: _state.value.weather,
         )
     }
 
