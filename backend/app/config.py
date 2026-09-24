@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     client_base_url: str
     client_base_token: SecretStr
     client_base_timeout_seconds: float = 20.0
+    dadata_api_key: SecretStr | None = None
+    dadata_secret_key: SecretStr | None = None
     registration_codes: str = ""
     access_token_minutes: int = 480
 
@@ -26,4 +28,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

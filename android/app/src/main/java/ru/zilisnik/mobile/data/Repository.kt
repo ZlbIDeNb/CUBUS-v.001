@@ -42,6 +42,13 @@ class Repository {
 
     suspend fun profile(): UserProfile = api.profile(auth())
 
+    suspend fun saveHomeAddress(address: String): HomeAddress =
+        try {
+            api.saveHomeAddress(auth(), HomeAddressRequest(address.trim()))
+        } catch (error: HttpException) {
+            throw IllegalStateException(apiErrorDetail(error))
+        }
+
     suspend fun schedule(year: Int, month: Int, refresh: Boolean = false): List<ScheduleDay> =
         api.schedule(auth(), year, month, refresh)
 
@@ -56,6 +63,13 @@ class Repository {
 
     suspend fun applicationStatusCounts(workDate: String): List<ApplicationStatusCount> =
         api.applicationStatusCounts(auth(), workDate)
+
+    suspend fun applicationMapPoints(workDate: String): List<ApplicationMapPoint> =
+        try {
+            api.applicationMapPoints(auth(), workDate)
+        } catch (error: HttpException) {
+            throw IllegalStateException(apiErrorDetail(error))
+        }
 
     suspend fun application(id: Long): ApplicationDetails =
         api.application(auth(), id)

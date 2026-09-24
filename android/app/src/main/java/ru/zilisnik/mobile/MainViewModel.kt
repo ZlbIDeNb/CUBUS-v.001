@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import ru.zilisnik.mobile.data.ApplicationDetails
+import ru.zilisnik.mobile.data.ApplicationMapPoint
 import ru.zilisnik.mobile.data.ApplicationStatusCount
 import ru.zilisnik.mobile.data.ApplicationSummary
 import ru.zilisnik.mobile.data.AddMeterRequest
@@ -36,6 +37,9 @@ data class UiState(
     val applications: List<ApplicationSummary> = emptyList(),
     val todayStatusCounts: List<ApplicationStatusCount> = emptyList(),
     val todayApplications: List<ApplicationSummary> = emptyList(),
+    val applicationMapPoints: List<ApplicationMapPoint> = emptyList(),
+    val applicationMapLoading: Boolean = false,
+    val applicationMapError: String? = null,
     val materialUsage: List<MaterialUsageItem> = emptyList(),
     val warehouseItems: List<WarehouseItem> = emptyList(),
     val warehouseLoading: Boolean = false,
@@ -44,6 +48,8 @@ data class UiState(
     val scheduleMonthOffset: Int = 0,
     val applicationDayOffset: Int = 0,
     val profile: UserProfile? = null,
+    val homeAddressSaving: Boolean = false,
+    val homeAddressError: String? = null,
     val selected: ApplicationDetails? = null,
     val message: String? = null,
     val nomenclatureLoading: Boolean = false,
@@ -493,6 +499,34 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
         }
     }
 
+    fun saveHomeAddress(address: String) {
+        if (address.isBlank() || _state.value.homeAddressSaving) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                homeAddressSaving = true,
+                homeAddressError = null,
+                message = null,
+            )
+            try {
+                val home = repository.saveHomeAddress(address)
+                _state.value = _state.value.copy(
+                    profile = _state.value.profile?.copy(
+                        home_address = home.address,
+                        home_latitude = home.latitude,
+                        home_longitude = home.longitude,
+                    ),
+                    homeAddressSaving = false,
+                    message = "Домашний адрес и координаты сохранены",
+                )
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    homeAddressSaving = false,
+                    homeAddressError = error.message ?: "Не удалось определить адрес",
+                )
+            }
+        }
+    }
+
     fun prepareRework(id: Long) = run {
         val reasons = repository.reworkReasons()
         _state.value = _state.value.copy(
@@ -542,15 +576,21 @@ class MainViewModel(private val repository: Repository = Repository()) : ViewMod
     private suspend fun loadDashboardInternal() = coroutineScope {
         val day = dateForOffset(0)
         val statuses = listOf("Новая", "Выполнено", "На Доработку")
+        _state.value = _state.value.copy(applicationMapLoading = true, applicationMapError = null)
         val applicationJobs = statuses.associateWith { status ->
             async { repository.applications(status, day) }
         }
+        val mapJob = async { runCatching { repository.applicationMapPoints(day) } }
         val grouped = applicationJobs.mapValues { (_, job) -> job.await() }
+        val mapResult = mapJob.await()
         _state.value = _state.value.copy(
             todayStatusCounts = statuses.map { status ->
                 ApplicationStatusCount(status, grouped[status].orEmpty().size)
             },
             todayApplications = statuses.flatMap { grouped[it].orEmpty() },
+            applicationMapPoints = mapResult.getOrDefault(emptyList()),
+            applicationMapLoading = false,
+            applicationMapError = mapResult.exceptionOrNull()?.message,
         )
     }
 

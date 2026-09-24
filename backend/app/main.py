@@ -8,12 +8,15 @@ from .config import Settings, get_settings
 from .dependencies import get_client_base
 from .models import (
     ApplicationDetails,
+    ApplicationMapPoint,
     ApplicationStatusCount,
     ApplicationSummary,
     AddMeterRequest,
     AddNomenclatureRequest,
     CloseApplicationRequest,
     EmployeeProfile,
+    HomeAddress,
+    HomeAddressRequest,
     OperationResult,
     NomenclatureItem,
     MeterCatalogItem,
@@ -77,6 +80,18 @@ async def application_status_counts(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/v1/application-map-points", response_model=list[ApplicationMapPoint])
+async def application_map_points(
+    work_date: date | None = None,
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.application_map_points(user["sub"], work_date)
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/v1/profile", response_model=EmployeeProfile)
 async def profile(
     user: dict = Depends(current_user),
@@ -86,6 +101,18 @@ async def profile(
         return await crm.employee_profile(
             user["sub"], user.get("role", ""), user.get("device", "")
         )
+    except ClientBaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/profile/home-address", response_model=HomeAddress)
+async def save_home_address(
+    request: HomeAddressRequest,
+    user: dict = Depends(current_user),
+    crm: ClientBaseClient = Depends(get_client_base),
+):
+    try:
+        return await crm.save_home_address(user["sub"], request.address)
     except ClientBaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

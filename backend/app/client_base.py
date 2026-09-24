@@ -16,6 +16,7 @@ import httpx
 from .config import Settings
 from .models import (
     ApplicationDetails,
+    ApplicationMapPoint,
     ApplicationPhoto,
     ApplicationStatusCount,
     ApplicationSummary,
@@ -24,6 +25,7 @@ from .models import (
     CloseApplicationRequest,
     EmployeeEquipment,
     EmployeeProfile,
+    HomeAddress,
     NomenclatureItem,
     MeterCatalogItem,
     MaterialUsageItem,
@@ -66,6 +68,8 @@ REWORK_REASON_FALLBACK = [
 
 # Reference catalogs are persisted in SQLite and refreshed only on explicit request.
 REFERENCE_CACHE_TTL_SECONDS = 10 * 365 * 24 * 60 * 60
+DADATA_CACHE_TTL_SECONDS = 180 * 24 * 60 * 60
+GEOCODE_MISS_TTL_SECONDS = 24 * 60 * 60
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -94,6 +98,12 @@ class ClientBaseClient:
         }
         self.fields = fields
         self.cache_path = Path(__file__).resolve().parent.parent / "client_base_cache.sqlite3"
+        self.dadata_api_key = (
+            settings.dadata_api_key.get_secret_value() if settings.dadata_api_key else ""
+        )
+        self.dadata_secret_key = (
+            settings.dadata_secret_key.get_secret_value() if settings.dadata_secret_key else ""
+        )
 
     def _cache_get(self, key: str) -> Any | None:
         cache_path = getattr(self, "cache_path", None)
@@ -243,6 +253,139 @@ class ClientBaseClient:
                     counts[value] += 1
         return [ApplicationStatusCount(status=name, count=counts[name]) for name in APPLICATION_STATUSES]
 
+    async def application_map_points(
+        self, crm_login: str, work_date: date | None = None
+    ) -> list[ApplicationMapPoint]:
+        applications = await self.list_applications(crm_login, work_date=work_date)
+        resolved_addresses: dict[str, dict[str, Any] | None] = {}
+        points: list[ApplicationMapPoint] = []
+        for application in applications:
+            address = application.address.strip()
+            if not address:
+                continue
+            normalized_address = address.casefold()
+            if normalized_address not in resolved_addresses:
+                resolved_addresses[normalized_address] = await self._dadata_address(address)
+            resolved = resolved_addresses[normalized_address]
+            if resolved is None:
+                continue
+            points.append(
+                ApplicationMapPoint(
+                    application_id=application.id,
+                    number=application.number,
+                    address=str(resolved["display_address"]),
+                    latitude=float(resolved["latitude"]),
+                    longitude=float(resolved["longitude"]),
+                )
+            )
+        return points
+
+    async def _dadata_address(self, address: str) -> dict[str, Any] | None:
+        query = self._compact_address(address)
+        cache_key = f"geocode:dadata:v1:{query.casefold()}"
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, dict):
+            return cached or None
+        if not self.dadata_api_key or not self.dadata_secret_key:
+            raise ClientBaseError(
+                "Не настроены DADATA_API_KEY и DADATA_SECRET_KEY на сервере"
+            )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                response = await client.post(
+                    "https://cleaner.dadata.ru/api/v1/clean/address",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "Authorization": f"Token {self.dadata_api_key}",
+                        "X-Secret": self.dadata_secret_key,
+                    },
+                    json=[query],
+                )
+            response.raise_for_status()
+            payload = response.json()
+            item = payload[0] if isinstance(payload, list) and payload else {}
+            latitude = item.get("geo_lat")
+            longitude = item.get("geo_lon")
+            if latitude in (None, "") or longitude in (None, ""):
+                self._cache_set(cache_key, {}, GEOCODE_MISS_TTL_SECONDS)
+                return None
+            resolved = {
+                "full_address": str(item.get("result") or query),
+                "display_address": self._dadata_street_and_house(item, query),
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+            }
+            self._cache_set(cache_key, resolved, DADATA_CACHE_TTL_SECONDS)
+            return resolved
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 403:
+                raise ClientBaseError(
+                    "DaData отклонила запрос: подтвердите почту аккаунта DaData "
+                    "и проверьте баланс сервиса",
+                    status_code=403,
+                ) from exc
+            raise ClientBaseError(
+                f"DaData вернула HTTP {exc.response.status_code}",
+                status_code=exc.response.status_code,
+            ) from exc
+        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+            raise ClientBaseError("Не удалось получить адрес и координаты через DaData") from exc
+
+    @staticmethod
+    def _compact_address(address: str) -> str:
+        without_area = re.sub(r"^\s*\([^)]*\)\s*", "", address).strip()
+        without_apartment = re.sub(
+            r",?\s*(?:кв(?:артира)?\.?|пом(?:ещение)?\.?)\s*[^,]*$",
+            "",
+            without_area,
+            flags=re.IGNORECASE,
+        ).strip(" ,")
+        street_and_house = without_apartment or without_area or address.strip()
+        has_explicit_city = bool(
+            re.search(
+                r"(?:^|,\s*)(?:г\.?\s+|москва\b|санкт-петербург\b)",
+                street_and_house,
+                flags=re.IGNORECASE,
+            )
+        )
+        first_part = street_and_house.split(",", 1)[0]
+        if not has_explicit_city and (
+            "," not in street_and_house
+            or re.match(
+                r"^(?:ул\.?|улица|проспект|пр-т|пер\.?|переулок|ш\.?|шоссе)\s+",
+                first_part,
+                flags=re.IGNORECASE,
+            )
+        ):
+            return f"Москва, {street_and_house}"
+        return street_and_house
+
+    @staticmethod
+    def _dadata_street_and_house(item: dict[str, Any], fallback: str) -> str:
+        parts = [
+            str(item.get("street_with_type") or "").strip(),
+            " ".join(
+                filter(
+                    None,
+                    [
+                        str(item.get("house_type") or "").strip(),
+                        str(item.get("house") or "").strip(),
+                    ],
+                )
+            ),
+            " ".join(
+                filter(
+                    None,
+                    [
+                        str(item.get("block_type") or "").strip(),
+                        str(item.get("block") or "").strip(),
+                    ],
+                )
+            ),
+        ]
+        return ", ".join(part for part in parts if part) or fallback
+
     async def _employee_id(self, crm_login: str) -> Any | None:
         row = await self._employee_row(crm_login)
         if row is None:
@@ -375,6 +518,8 @@ class ClientBaseClient:
     ) -> EmployeeProfile:
         row = await self._employee_row(crm_login)
         attrs = row.get("attributes", {}) if row else {}
+        home = self._cache_get(f"profile-home:v1:{crm_login.casefold()}")
+        home = home if isinstance(home, dict) else {}
         return EmployeeProfile(
             login=crm_login,
             role=role,
@@ -391,8 +536,27 @@ class ClientBaseClient:
             folder_number=str(
                 attrs.get(self.fields["employee_folder_number"], "") or ""
             ),
+            home_address=str(home.get("address", "") or ""),
+            home_latitude=home.get("latitude"),
+            home_longitude=home.get("longitude"),
             equipment=self._employee_equipment(attrs),
         )
+
+    async def save_home_address(self, crm_login: str, address: str) -> HomeAddress:
+        resolved = await self._dadata_address(address)
+        if resolved is None:
+            raise ClientBaseError("DaData не нашла указанный дом")
+        home = HomeAddress(
+            address=str(resolved["full_address"]),
+            latitude=float(resolved["latitude"]),
+            longitude=float(resolved["longitude"]),
+        )
+        self._cache_set(
+            f"profile-home:v1:{crm_login.casefold()}",
+            home.model_dump(),
+            REFERENCE_CACHE_TTL_SECONDS,
+        )
+        return home
 
     async def employee_schedule(
         self, crm_login: str, year: int, month: int, refresh: bool = False

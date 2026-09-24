@@ -3,11 +3,18 @@ package ru.zilisnik.mobile
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -63,7 +70,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Shapes
@@ -92,11 +98,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import ru.zilisnik.mobile.data.ApplicationDetails
+import ru.zilisnik.mobile.data.ApplicationMapPoint
 import ru.zilisnik.mobile.data.ApplicationPhoto
 import ru.zilisnik.mobile.data.ApplicationStatusCount
 import ru.zilisnik.mobile.data.ApplicationSummary
@@ -113,6 +121,14 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.roundToInt
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import android.util.LruCache
+import kotlin.math.ln
+import kotlin.math.pow
+import kotlin.math.sin
 
 private val CubusColorScheme = lightColorScheme(
     primary = Color(0xFF2B5A78),
@@ -139,7 +155,7 @@ private val CubusColorScheme = lightColorScheme(
 private val CubusBlockColor = Color(0xFFE2EDF2)
 private val CubusButtonColor = Color(0xFF2B5A78)
 private val WarehouseBlockColor = Color(0xFFE2EDF2)
-private val CubusComponentShape = RoundedCornerShape(12.dp)
+private val CubusComponentShape = RoundedCornerShape(16.dp)
 private fun normalizeWarehouseName(value: String): String = value
     .lowercase(Locale("ru"))
     .replace('ё', 'е')
@@ -280,7 +296,7 @@ private fun FilterChip(
 private fun Card(
     modifier: Modifier = Modifier,
     containerColor: Color = CubusBlockColor,
-    border: BorderStroke? = null,
+    border: BorderStroke? = BorderStroke(1.dp, CubusButtonColor),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     MaterialCard(
@@ -407,47 +423,50 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
     ) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = {
-                        Text(
-                            state.selected?.let { "Заявка № ${it.number}" } ?: when (section) {
-                                AppSection.MAIN -> "Основной экран"
-                                AppSection.PROFILE -> "Личный кабинет"
-                                AppSection.APPLICATIONS -> "Заявки"
-                                AppSection.WAREHOUSE -> "Склад метролога"
-                                AppSection.SERVICE -> "Сервис"
-                            },
-                            style = MaterialTheme.typography.headlineSmall,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    },
-                    navigationIcon = {
-                        if (state.selected != null || section != AppSection.MAIN) {
-                            BackIconButton(
-                                modifier = Modifier.padding(start = 4.dp),
-                                onClick = {
-                                    if (state.selected != null) {
-                                        vm.back()
-                                    } else {
-                                        val target = previousSection
-                                        previousSection = section
-                                        section = target
-                                    }
+                if (section != AppSection.WAREHOUSE || state.selected != null) {
+                    TopAppBar(
+                        title = {
+                            Text(
+                                state.selected?.let { "Заявка № ${it.number}" } ?: when (section) {
+                                    AppSection.MAIN -> "Основной экран"
+                                    AppSection.PROFILE -> "Личный кабинет"
+                                    AppSection.APPLICATIONS -> "Заявки"
+                                    AppSection.WAREHOUSE -> "Склад метролога"
+                                    AppSection.SERVICE -> "Сервис"
                                 },
+                                style = MaterialTheme.typography.headlineSmall,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
                             )
-                        } else {
-                            Image(
-                                painter = painterResource(R.drawable.menu_icon),
-                                contentDescription = "Открыть меню",
-                                modifier = Modifier
-                                    .padding(start = 4.dp)
-                                    .size(52.dp)
-                                    .clickable { scope.launch { drawerState.open() } },
-                            )
-                        }
-                    },
-                )
+                        },
+                        navigationIcon = {
+                            if (state.selected != null || section != AppSection.MAIN) {
+                                BackIconButton(
+                                    modifier = Modifier.padding(start = 4.dp),
+                                    onClick = {
+                                        if (state.selected != null) {
+                                            vm.back()
+                                        } else {
+                                            val target = previousSection
+                                            previousSection = section
+                                            section = target
+                                        }
+                                    },
+                                )
+                            } else {
+                                Image(
+                                    painter = painterResource(R.drawable.menu_icon),
+                                    contentDescription = "Открыть меню",
+                                    modifier = Modifier
+                                        .padding(start = 4.dp)
+                                        .size(52.dp)
+                                        .clickable { scope.launch { drawerState.open() } },
+                                )
+                            }
+                        },
+                        actions = { Spacer(Modifier.width(56.dp)) },
+                    )
+                }
             },
         ) { padding ->
             Column(
@@ -492,6 +511,9 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         state.profile,
                         state.todayStatusCounts,
                         state.todayApplications,
+                        state.applicationMapPoints,
+                        state.applicationMapLoading,
+                        state.applicationMapError,
                         vm::select,
                         vm::refreshDashboard,
                     )
@@ -499,8 +521,11 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         state.profile,
                         state.scheduleDays,
                         state.scheduleMonthOffset,
+                        state.homeAddressSaving,
+                        state.homeAddressError,
                         vm::selectScheduleMonth,
                         vm::refreshSchedule,
+                        vm::saveHomeAddress,
                     )
                     section == AppSection.APPLICATIONS -> ApplicationsScreen(
                         applications = state.applications,
@@ -515,6 +540,11 @@ fun ZilisnikApp(vm: MainViewModel = viewModel()) {
                         loading = state.warehouseLoading,
                         error = state.warehouseError,
                         onRefresh = vm::loadWarehouse,
+                        onBack = {
+                            val target = previousSection
+                            previousSection = section
+                            section = target
+                        },
                     )
                     else -> ServiceScreen(
                         priceListCount = state.priceList.size,
@@ -553,8 +583,23 @@ private fun ColumnScope.WarehouseScreen(
     loading: Boolean,
     error: String?,
     onRefresh: () -> Unit,
+    onBack: () -> Unit,
 ) {
-    AppHeading("Склад метролога")
+    Box(
+        modifier = Modifier.fillMaxWidth().height(56.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        BackIconButton(
+            onClick = onBack,
+            modifier = Modifier.align(Alignment.CenterStart),
+        )
+        Text(
+            "Склад метролога",
+            style = MaterialTheme.typography.headlineSmall,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 60.dp),
+        )
+    }
     when {
         loading -> Box(
             modifier = Modifier.fillMaxWidth().weight(1f),
@@ -601,7 +646,7 @@ private fun ColumnScope.WarehouseScreen(
             }
             items(warehouseItems.sortedWith(warehouseItemComparator), key = { it.id }) { item ->
                 Row(
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -706,11 +751,28 @@ private fun DrawerItem(
     selected: AppSection,
     onClick: () -> Unit,
 ) {
-    NavigationDrawerItem(
-        label = { Text(title) },
-        selected = selected == target,
-        onClick = onClick,
-    )
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+            .clickable(onClick = onClick),
+        containerColor = WarehouseBlockColor,
+        border = BorderStroke(
+            if (selected == target) 2.dp else 1.dp,
+            CubusButtonColor,
+        ),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth().height(50.dp).padding(horizontal = 16.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                title,
+                color = CubusButtonColor,
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+    }
 }
 
 @Composable
@@ -741,6 +803,9 @@ private fun ColumnScope.MainScreen(
     profile: UserProfile?,
     statusCounts: List<ApplicationStatusCount>,
     applications: List<ApplicationSummary>,
+    mapPoints: List<ApplicationMapPoint>,
+    mapLoading: Boolean,
+    mapError: String?,
     onOpen: (Long) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -785,6 +850,386 @@ private fun ColumnScope.MainScreen(
         Button(modifier = Modifier.fillMaxWidth(), onClick = onRefresh) {
             Text("Обновить список заявок")
         }
+        AppHeading("Заявки на карте")
+        ApplicationMapCard(
+            points = mapPoints,
+            homeAddress = profile?.home_address.orEmpty(),
+            homeLatitude = profile?.home_latitude,
+            homeLongitude = profile?.home_longitude,
+            loading = mapLoading,
+            error = mapError,
+            onOpen = onOpen,
+        )
+    }
+}
+
+@Composable
+private fun ApplicationMapCard(
+    points: List<ApplicationMapPoint>,
+    homeAddress: String,
+    homeLatitude: Double?,
+    homeLongitude: Double?,
+    loading: Boolean,
+    error: String?,
+    onOpen: (Long) -> Unit,
+) {
+    val hasHomePoint = homeLatitude != null && homeLongitude != null
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        containerColor = WarehouseBlockColor,
+        border = BorderStroke(1.dp, CubusButtonColor),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when {
+                loading && !hasHomePoint && points.isEmpty() -> Box(
+                    modifier = Modifier.fillMaxWidth().height(220.dp),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
+                !hasHomePoint && points.isEmpty() -> Text(
+                    if (error.isNullOrBlank()) {
+                        "Сначала сохраните домашний адрес метролога"
+                    } else {
+                        error
+                    },
+                    modifier = Modifier.padding(vertical = 16.dp),
+                )
+                else -> {
+                    ApplicationsMap(
+                        points = points,
+                        homeAddress = homeAddress,
+                        homeLatitude = homeLatitude,
+                        homeLongitude = homeLongitude,
+                        onOpen = onOpen,
+                    )
+                    if (loading) {
+                        Text("Добавляем заявки на карту…", style = MaterialTheme.typography.bodySmall)
+                    } else if (!error.isNullOrBlank()) {
+                        Text(error, color = MaterialTheme.colorScheme.error)
+                    } else if (points.isEmpty()) {
+                        Text(
+                            "Стартовая точка добавлена. Для заявок координаты пока не найдены.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApplicationsMap(
+    points: List<ApplicationMapPoint>,
+    homeAddress: String,
+    homeLatitude: Double?,
+    homeLongitude: Double?,
+    onOpen: (Long) -> Unit,
+) {
+    AndroidView(
+        modifier = Modifier.fillMaxWidth().height(260.dp),
+        factory = { context -> NativeOsmMapView(context) },
+        update = { mapView ->
+            mapView.updateLocations(
+                homeAddress = homeAddress,
+                homeLatitude = homeLatitude,
+                homeLongitude = homeLongitude,
+                applications = points,
+                onOpen = onOpen,
+            )
+        },
+    )
+}
+
+private data class NativeMapLocation(
+    val latitude: Double,
+    val longitude: Double,
+    val label: String,
+    val applicationId: Long? = null,
+)
+
+private data class ProjectedPoint(val x: Double, val y: Double)
+
+private class NativeOsmMapView(context: Context) : View(context) {
+    private val density = resources.displayMetrics.density
+    private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(43, 90, 120)
+        style = Paint.Style.STROKE
+        strokeWidth = 4f * density
+    }
+    private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val markerTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+    private val attributionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.DKGRAY
+        textAlign = Paint.Align.RIGHT
+        textSize = 10f * density
+    }
+    private var locations: List<NativeMapLocation> = emptyList()
+    private var screenLocations: List<Pair<NativeMapLocation, ProjectedPoint>> = emptyList()
+    private var onOpen: (Long) -> Unit = {}
+    private var zoomOffset = 0
+    private var panX = 0.0
+    private var panY = 0.0
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var touchMoved = false
+    private var scaleAccumulator = 1f
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                scaleAccumulator *= detector.scaleFactor
+                when {
+                    scaleAccumulator > 1.18f -> {
+                        changeZoom(1)
+                        scaleAccumulator = 1f
+                    }
+                    scaleAccumulator < 0.85f -> {
+                        changeZoom(-1)
+                        scaleAccumulator = 1f
+                    }
+                }
+                return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                scaleAccumulator = 1f
+            }
+        },
+    )
+
+    fun updateLocations(
+        homeAddress: String,
+        homeLatitude: Double?,
+        homeLongitude: Double?,
+        applications: List<ApplicationMapPoint>,
+        onOpen: (Long) -> Unit,
+    ) {
+        this.onOpen = onOpen
+        val updated = buildList {
+            if (homeLatitude != null && homeLongitude != null) {
+                add(NativeMapLocation(homeLatitude, homeLongitude, "⌂"))
+            }
+            applications.forEachIndexed { index, point ->
+                add(
+                    NativeMapLocation(
+                        point.latitude,
+                        point.longitude,
+                        (index + 1).toString(),
+                        point.application_id,
+                    ),
+                )
+            }
+        }
+        if (locations != updated) {
+            locations = updated
+            zoomOffset = 0
+            panX = 0.0
+            panY = 0.0
+            invalidate()
+        }
+        contentDescription = if (homeAddress.isBlank()) "Карта заявок" else "Старт: $homeAddress"
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.drawColor(android.graphics.Color.rgb(226, 237, 242))
+        if (locations.isEmpty() || width == 0 || height == 0) return
+        val zoom = (chooseZoom() + zoomOffset).coerceIn(3, 18)
+        val projected = locations.map { project(it.latitude, it.longitude, zoom) }
+        val centerX = (projected.minOf { it.x } + projected.maxOf { it.x }) / 2.0
+        val centerY = (projected.minOf { it.y } + projected.maxOf { it.y }) / 2.0
+        val originX = centerX - width / 2.0 - panX
+        val originY = centerY - height / 2.0 - panY
+        drawTiles(canvas, zoom, originX, originY)
+        val screen = projected.map { ProjectedPoint(it.x - originX, it.y - originY) }
+        if (screen.size > 1) {
+            val path = Path().apply {
+                moveTo(screen.first().x.toFloat(), screen.first().y.toFloat())
+                screen.drop(1).forEach { lineTo(it.x.toFloat(), it.y.toFloat()) }
+            }
+            canvas.drawPath(path, routePaint)
+        }
+        locations.zip(screen).forEachIndexed { index, (location, point) ->
+            val isHome = index == 0 && location.applicationId == null
+            val radius = (if (isHome) 18f else 15f) * density
+            markerPaint.style = Paint.Style.FILL
+            markerPaint.color = if (isHome) {
+                android.graphics.Color.rgb(43, 90, 120)
+            } else {
+                android.graphics.Color.rgb(226, 237, 242)
+            }
+            canvas.drawCircle(point.x.toFloat(), point.y.toFloat(), radius, markerPaint)
+            markerPaint.style = Paint.Style.STROKE
+            markerPaint.strokeWidth = 2f * density
+            markerPaint.color = if (isHome) android.graphics.Color.WHITE else android.graphics.Color.rgb(43, 90, 120)
+            canvas.drawCircle(point.x.toFloat(), point.y.toFloat(), radius, markerPaint)
+            markerTextPaint.color = if (isHome) android.graphics.Color.WHITE else android.graphics.Color.rgb(43, 90, 120)
+            markerTextPaint.textSize = (if (isHome) 20f else 13f) * density
+            val baseline = point.y.toFloat() - (markerTextPaint.ascent() + markerTextPaint.descent()) / 2f
+            canvas.drawText(location.label, point.x.toFloat(), baseline, markerTextPaint)
+        }
+        screenLocations = locations.zip(screen)
+        canvas.drawText("© OpenStreetMap", width - 6f * density, height - 5f * density, attributionPaint)
+        drawZoomControls(canvas)
+    }
+
+    private fun chooseZoom(): Int {
+        if (locations.size == 1) return 15
+        for (zoom in 17 downTo 3) {
+            val points = locations.map { project(it.latitude, it.longitude, zoom) }
+            val spanX = points.maxOf { it.x } - points.minOf { it.x }
+            val spanY = points.maxOf { it.y } - points.minOf { it.y }
+            if (spanX <= width - 70 * density && spanY <= height - 70 * density) return zoom
+        }
+        return 3
+    }
+
+    private fun project(latitude: Double, longitude: Double, zoom: Int): ProjectedPoint {
+        val scale = TILE_SIZE * 2.0.pow(zoom)
+        val limitedLatitude = latitude.coerceIn(-85.05112878, 85.05112878)
+        val latitudeSin = sin(Math.toRadians(limitedLatitude))
+        return ProjectedPoint(
+            x = (longitude + 180.0) / 360.0 * scale,
+            y = (0.5 - ln((1 + latitudeSin) / (1 - latitudeSin)) / (4 * Math.PI)) * scale,
+        )
+    }
+
+    private fun drawTiles(canvas: Canvas, zoom: Int, originX: Double, originY: Double) {
+        val tileCount = 1 shl zoom
+        val firstX = kotlin.math.floor(originX / TILE_SIZE).toInt()
+        val lastX = kotlin.math.floor((originX + width) / TILE_SIZE).toInt()
+        val firstY = kotlin.math.floor(originY / TILE_SIZE).toInt()
+        val lastY = kotlin.math.floor((originY + height) / TILE_SIZE).toInt()
+        for (tileX in firstX..lastX) for (tileY in firstY..lastY) {
+            if (tileY !in 0 until tileCount) continue
+            val wrappedX = ((tileX % tileCount) + tileCount) % tileCount
+            val key = "$zoom/$wrappedX/$tileY"
+            val left = (tileX * TILE_SIZE - originX).toFloat()
+            val top = (tileY * TILE_SIZE - originY).toFloat()
+            val bitmap = synchronized(tileCache) { tileCache.get(key) }
+            if (bitmap != null) {
+                canvas.drawBitmap(bitmap, left, top, null)
+            } else {
+                requestTile(key)
+            }
+        }
+    }
+
+    private fun requestTile(key: String) {
+        if (!loadingTiles.add(key) || failedTiles.contains(key)) return
+        tileExecutor.execute {
+            try {
+                val connection = URL("https://tile.openstreetmap.org/$key.png").openConnection() as HttpURLConnection
+                connection.connectTimeout = 8_000
+                connection.readTimeout = 8_000
+                connection.setRequestProperty("User-Agent", "CUBUS-Metrolog/1.02")
+                connection.inputStream.use { input ->
+                    BitmapFactory.decodeStream(input)?.let { bitmap ->
+                        synchronized(tileCache) { tileCache.put(key, bitmap) }
+                    }
+                }
+                postInvalidate()
+            } catch (_: Exception) {
+                failedTiles.add(key)
+            } finally {
+                loadingTiles.remove(key)
+            }
+        }
+    }
+
+    private fun drawZoomControls(canvas: Canvas) {
+        val radius = 19f * density
+        val x = width - radius - 8f * density
+        val firstY = radius + 8f * density
+        markerPaint.style = Paint.Style.FILL
+        markerPaint.color = android.graphics.Color.argb(225, 255, 255, 255)
+        canvas.drawCircle(x, firstY, radius, markerPaint)
+        canvas.drawCircle(x, firstY + radius * 2.25f, radius, markerPaint)
+        markerPaint.style = Paint.Style.STROKE
+        markerPaint.strokeWidth = 1.5f * density
+        markerPaint.color = android.graphics.Color.rgb(43, 90, 120)
+        canvas.drawCircle(x, firstY, radius, markerPaint)
+        canvas.drawCircle(x, firstY + radius * 2.25f, radius, markerPaint)
+        markerTextPaint.color = android.graphics.Color.rgb(43, 90, 120)
+        markerTextPaint.textSize = 24f * density
+        val plusBaseline = firstY - (markerTextPaint.ascent() + markerTextPaint.descent()) / 2f
+        val minusY = firstY + radius * 2.25f
+        val minusBaseline = minusY - (markerTextPaint.ascent() + markerTextPaint.descent()) / 2f
+        canvas.drawText("+", x, plusBaseline, markerTextPaint)
+        canvas.drawText("−", x, minusBaseline, markerTextPaint)
+    }
+
+    private fun changeZoom(delta: Int) {
+        zoomOffset = (zoomOffset + delta).coerceIn(-10, 10)
+        panX = 0.0
+        panY = 0.0
+        invalidate()
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        parent?.requestDisallowInterceptTouchEvent(true)
+        scaleDetector.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lastTouchX = event.x
+                lastTouchY = event.y
+                touchMoved = false
+            }
+            MotionEvent.ACTION_MOVE -> if (event.pointerCount == 1 && !scaleDetector.isInProgress) {
+                val dx = event.x - lastTouchX
+                val dy = event.y - lastTouchY
+                if (kotlin.math.abs(dx) > 1f || kotlin.math.abs(dy) > 1f) touchMoved = true
+                panX += dx
+                panY += dy
+                lastTouchX = event.x
+                lastTouchY = event.y
+                invalidate()
+            }
+            MotionEvent.ACTION_UP -> if (!touchMoved) {
+                val radius = 19f * density
+                val controlX = width - radius - 8f * density
+                val plusY = radius + 8f * density
+                val minusY = plusY + radius * 2.25f
+                fun inControl(y: Float): Boolean {
+                    val dx = event.x - controlX
+                    val dy = event.y - y
+                    return dx * dx + dy * dy <= radius * radius
+                }
+                when {
+                    inControl(plusY) -> changeZoom(1)
+                    inControl(minusY) -> changeZoom(-1)
+                    else -> openApplicationAt(event.x, event.y)
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
+        }
+        if (event.actionMasked == MotionEvent.ACTION_UP) {
+            parent?.requestDisallowInterceptTouchEvent(false)
+        }
+        return true
+    }
+
+    private fun openApplicationAt(x: Float, y: Float) {
+            val hitRadius = 28f * density
+            screenLocations.firstOrNull { (_, point) ->
+                val dx = x - point.x.toFloat()
+                val dy = y - point.y.toFloat()
+                dx * dx + dy * dy <= hitRadius * hitRadius
+            }?.first?.applicationId?.let(onOpen)
+    }
+
+    companion object {
+        private const val TILE_SIZE = 256
+        private val tileCache = LruCache<String, Bitmap>(48)
+        private val loadingTiles = ConcurrentHashMap.newKeySet<String>()
+        private val failedTiles = ConcurrentHashMap.newKeySet<String>()
+        private val tileExecutor = Executors.newFixedThreadPool(3)
     }
 }
 
@@ -841,10 +1286,18 @@ private fun ColumnScope.ProfileScreen(
     profile: UserProfile?,
     scheduleDays: List<ScheduleDay>,
     scheduleMonthOffset: Int,
+    homeAddressSaving: Boolean,
+    homeAddressError: String?,
     onMonthSelect: (Int) -> Unit,
     onRefreshSchedule: () -> Unit,
+    onSaveHomeAddress: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    var homeAddress by remember(profile?.home_address) {
+        mutableStateOf(profile?.home_address.orEmpty())
+    }
+    val homeLatitude = profile?.home_latitude
+    val homeLongitude = profile?.home_longitude
     Column(
         modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -862,6 +1315,36 @@ private fun ColumnScope.ProfileScreen(
                 ProfileLine("График работы", profile?.work_schedule)
                 ProfileLine("Max кол-во заявок", profile?.max_applications)
                 ProfileLine("Номер Папки", profile?.folder_number)
+                OutlinedTextField(
+                    value = homeAddress,
+                    onValueChange = { homeAddress = it },
+                    label = { Text("Домашний адрес") },
+                    placeholder = { Text("Улица и номер дома") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = homeAddress.isNotBlank() && !homeAddressSaving,
+                    onClick = { onSaveHomeAddress(homeAddress) },
+                ) {
+                    Text(if (homeAddressSaving) "Получаем координаты…" else "Получить координаты")
+                }
+                OutlinedTextField(
+                    value = if (homeLatitude != null && homeLongitude != null) {
+                        "$homeLatitude, $homeLongitude"
+                    } else {
+                        ""
+                    },
+                    onValueChange = {},
+                    label = { Text("Координаты") },
+                    modifier = Modifier.fillMaxWidth(),
+                    readOnly = true,
+                    singleLine = true,
+                )
+                homeAddressError?.let { error ->
+                    Text(error, color = MaterialTheme.colorScheme.error)
+                }
             }
         }
         AppHeading("График работы")

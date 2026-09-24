@@ -25,10 +25,22 @@ interface ApiService {
         @Query("work_date") workDate: String,
     ): List<ApplicationStatusCount>
 
+    @GET("api/v1/application-map-points")
+    suspend fun applicationMapPoints(
+        @Header("Authorization") authorization: String,
+        @Query("work_date") workDate: String,
+    ): List<ApplicationMapPoint>
+
     @GET("api/v1/profile")
     suspend fun profile(
         @Header("Authorization") authorization: String,
     ): UserProfile
+
+    @POST("api/v1/profile/home-address")
+    suspend fun saveHomeAddress(
+        @Header("Authorization") authorization: String,
+        @Body request: HomeAddressRequest,
+    ): HomeAddress
 
     @GET("api/v1/schedule")
     suspend fun schedule(

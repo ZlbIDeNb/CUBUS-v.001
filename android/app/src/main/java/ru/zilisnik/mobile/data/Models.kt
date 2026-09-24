@@ -28,7 +28,18 @@ data class UserProfile(
     val work_schedule: String,
     val max_applications: String,
     val folder_number: String,
+    val home_address: String = "",
+    val home_latitude: Double? = null,
+    val home_longitude: Double? = null,
     val equipment: List<EmployeeEquipment> = emptyList(),
+)
+
+data class HomeAddressRequest(val address: String)
+
+data class HomeAddress(
+    val address: String,
+    val latitude: Double,
+    val longitude: Double,
 )
 
 data class ApplicationSummary(
@@ -47,6 +58,14 @@ data class ApplicationSummary(
 )
 
 data class ApplicationStatusCount(val status: String, val count: Int)
+
+data class ApplicationMapPoint(
+    val application_id: Long,
+    val number: String,
+    val address: String,
+    val latitude: Double,
+    val longitude: Double,
+)
 
 data class ScheduleDay(
     val date: String,

@@ -146,6 +146,60 @@ def test_application_status_counts_keeps_defined_order_and_zeroes():
     asyncio.run(run_test())
 
 
+def test_application_map_points_skips_empty_and_unresolved_addresses():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+
+        async def fake_list_applications(*_args, **_kwargs):
+            return [
+                ApplicationSummary(id=1, number="101", address="Новгород, ул. Мира, 1", status="Новая"),
+                ApplicationSummary(id=2, number="102", address="", status="Новая"),
+                ApplicationSummary(id=3, number="103", address="Неизвестный адрес", status="Выполнено"),
+            ]
+
+        async def fake_dadata(address):
+            if not address.startswith("Новгород"):
+                return None
+            return {
+                "display_address": "ул Мира, д 1",
+                "full_address": "г Великий Новгород, ул Мира, д 1",
+                "latitude": 58.52,
+                "longitude": 31.27,
+            }
+
+        client.list_applications = fake_list_applications
+        client._dadata_address = fake_dadata
+        result = await client.application_map_points("metrolog", date(2026, 9, 24))
+        assert len(result) == 1
+        assert result[0].application_id == 1
+        assert result[0].latitude == 58.52
+        assert result[0].longitude == 31.27
+
+    asyncio.run(run_test())
+
+
+def test_compact_address_removes_area_and_apartment():
+    address = "(Юго-Западный, Черемушки) ул Перекопская, д 17, к 5, кв 335"
+    assert ClientBaseClient._compact_address(address) == "Москва, ул Перекопская, д 17, к 5"
+
+
+def test_dadata_street_and_house_excludes_district_and_apartment():
+    result = ClientBaseClient._dadata_street_and_house(
+        {
+            "city_area": "Юго-Западный",
+            "city_district": "Черемушки",
+            "street_with_type": "ул Перекопская",
+            "house_type": "д",
+            "house": "17",
+            "block_type": "к",
+            "block": "5",
+            "flat": "335",
+        },
+        "fallback",
+    )
+    assert result == "ул Перекопская, д 17, к 5"
+
+
 def test_metrolog_warehouse_uses_authenticated_clientbase_user():
     async def run_test():
         client = object.__new__(ClientBaseClient)

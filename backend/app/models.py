@@ -44,6 +44,14 @@ class ApplicationStatusCount(BaseModel):
     count: int = Field(ge=0)
 
 
+class ApplicationMapPoint(BaseModel):
+    application_id: int
+    number: str
+    address: str
+    latitude: float
+    longitude: float
+
+
 class ScheduleDay(BaseModel):
     date: date
     day: int
@@ -92,7 +100,20 @@ class EmployeeProfile(BaseModel):
     work_schedule: str = ""
     max_applications: str = ""
     folder_number: str = ""
+    home_address: str = ""
+    home_latitude: float | None = None
+    home_longitude: float | None = None
     equipment: list[EmployeeEquipment] = Field(default_factory=list)
+
+
+class HomeAddressRequest(BaseModel):
+    address: str = Field(min_length=3, max_length=500)
+
+
+class HomeAddress(BaseModel):
+    address: str
+    latitude: float
+    longitude: float
 
 
 class WaterMeter(BaseModel):
