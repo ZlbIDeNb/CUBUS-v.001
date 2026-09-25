@@ -855,37 +855,36 @@ class ClientBaseClient:
         resolved_names = await asyncio.gather(
             *(self._price_list_name(name) for name in raw_names)
         )
-        result: list[WarehouseItem] = []
+        result_by_id: dict[int, WarehouseItem] = {}
         for row, resolved_name, raw_name in zip(rows, resolved_names, raw_names):
             attrs = row.get("attributes", {}) or {}
-            result.append(
-                WarehouseItem(
-                    id=int(row["id"]),
-                    name=resolved_name or raw_name,
-                    incoming=str(attrs.get(self.fields["warehouse_incoming"], "") or ""),
-                    outgoing=str(attrs.get(self.fields["warehouse_outgoing"], "") or ""),
-                    balance=str(attrs.get(self.fields["warehouse_balance"], "") or ""),
-                    written_off_to_warehouse=str(
-                        attrs.get(self.fields["warehouse_written_off"], "") or ""
-                    ),
-                    defect_quantity=str(
-                        attrs.get(self.fields["warehouse_defect_quantity"], "") or ""
-                    ),
-                    defect_position=str(
-                        attrs.get(self.fields["warehouse_defect_position"], "") or ""
-                    ),
-                    writeoff_goods_quantity=str(
-                        attrs.get(self.fields["warehouse_writeoff_goods"], "") or ""
-                    ),
-                    service_writeoff_quantity=str(
-                        attrs.get(self.fields["warehouse_service_writeoff"], "") or ""
-                    ),
-                    total_written_off=str(
-                        attrs.get(self.fields["warehouse_total_written_off"], "") or ""
-                    ),
-                )
+            item_id = int(row["id"])
+            result_by_id[item_id] = WarehouseItem(
+                id=item_id,
+                name=resolved_name or raw_name,
+                incoming=str(attrs.get(self.fields["warehouse_incoming"], "") or ""),
+                outgoing=str(attrs.get(self.fields["warehouse_outgoing"], "") or ""),
+                balance=str(attrs.get(self.fields["warehouse_balance"], "") or ""),
+                written_off_to_warehouse=str(
+                    attrs.get(self.fields["warehouse_written_off"], "") or ""
+                ),
+                defect_quantity=str(
+                    attrs.get(self.fields["warehouse_defect_quantity"], "") or ""
+                ),
+                defect_position=str(
+                    attrs.get(self.fields["warehouse_defect_position"], "") or ""
+                ),
+                writeoff_goods_quantity=str(
+                    attrs.get(self.fields["warehouse_writeoff_goods"], "") or ""
+                ),
+                service_writeoff_quantity=str(
+                    attrs.get(self.fields["warehouse_service_writeoff"], "") or ""
+                ),
+                total_written_off=str(
+                    attrs.get(self.fields["warehouse_total_written_off"], "") or ""
+                ),
             )
-        result = sorted(result, key=lambda item: item.name.casefold())
+        result = sorted(result_by_id.values(), key=lambda item: item.name.casefold())
         self._cache_set(
             cache_key,
             [item.model_dump() for item in result],

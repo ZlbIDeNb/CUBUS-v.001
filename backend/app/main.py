@@ -783,8 +783,7 @@ async def today_statistics(
     crm: ClientBaseClient = Depends(get_client_base),
 ):
     statistics_date = work_date or date.today()
-    is_admin = str(user.get("role", "")).casefold() in {"администратор", "admin"}
-    scope = "__company__" if is_admin else user["sub"]
+    scope = statistics_scope(user)
     existing = operations_store.latest_tracking_snapshot(scope, statistics_date)
     if existing is not None:
         return existing
@@ -805,8 +804,7 @@ async def today_statistics_history(
     work_date: date | None = None,
     user: dict = Depends(current_user),
 ):
-    is_admin = str(user.get("role", "")).casefold() in {"администратор", "admin"}
-    scope = "__company__" if is_admin else user["sub"]
+    scope = statistics_scope(user)
     return operations_store.tracking_snapshots(
         scope, work_date or date.today()
     )

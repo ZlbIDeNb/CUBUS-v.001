@@ -3,12 +3,21 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app import main as main_module
-from app.main import capture_today_statistics, latest_statistics_slot
+from app.main import capture_today_statistics, latest_statistics_slot, statistics_scope
 from app.models import ApplicationSummary
 from app.operations_store import OperationsStore
 
 
 MOSCOW = ZoneInfo("Europe/Moscow")
+
+
+def test_admin_api_and_scheduler_share_the_same_statistics_scope():
+    assert statistics_scope({"sub": "admin", "role": "Администратор"}) == (
+        "__company_quarter_hour__"
+    )
+    assert statistics_scope({"sub": "metrolog-1", "role": "Метролог"}) == (
+        "metrolog-1"
+    )
 
 
 def test_latest_statistics_slot_during_workday():

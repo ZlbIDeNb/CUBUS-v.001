@@ -368,7 +368,7 @@ def test_metrolog_warehouse_uses_authenticated_clientbase_user():
             assert kwargs["filter_expression"] == (
                 "and(eq(status,0),eq(f13030,460))"
             )
-            return [{
+            row = {
                 "id": "15",
                 "attributes": {
                     "f13040": "91",
@@ -382,7 +382,10 @@ def test_metrolog_warehouse_uses_authenticated_clientbase_user():
                     "f15811": "1",
                     "f15821": "5",
                 },
-            }]
+            }
+            # ClientBase can repeat a row while pages are changing. The API must
+            # return one stable warehouse position per record id.
+            return [row, dict(row)]
 
         async def fake_price_name(value):
             assert value == "91"

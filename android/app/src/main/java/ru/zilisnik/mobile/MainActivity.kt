@@ -1034,7 +1034,10 @@ private fun ColumnScope.WarehouseScreen(
                     )
                 }
             }
-            items(warehouseItems.sortedWith(warehouseItemComparator), key = { it.id }) { item ->
+            // ClientBase can temporarily return the same row more than once while its
+            // table is being updated. Positional Compose keys keep the screen stable
+            // until the server-side de-duplication refreshes the cached warehouse.
+            items(warehouseItems.sortedWith(warehouseItemComparator)) { item ->
                 Row(
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
