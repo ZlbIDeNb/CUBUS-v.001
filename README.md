@@ -54,3 +54,16 @@ property and defaults to `https://api.cubus.pro/`.
 Never commit API tokens, passwords, signing keys, production `.env` files,
 SQLite databases, APK files or deployment archives. If a credential is ever
 committed, revoke it immediately; deleting it in a later commit is not enough.
+
+## GitHub backup
+
+Run `BACKUP_CUBUS_TO_GITHUB.cmd` after a completed update. The backup process:
+
+- checks GitHub for newer changes before touching the repository;
+- stages only approved source-code and documentation paths;
+- refuses to commit production secrets or generated runtime data;
+- creates a dated commit and pushes it to the `main` branch.
+
+The current server update script invokes the same backup automatically after a
+successful deployment. If the server deployment fails, no backup commit is
+created.
