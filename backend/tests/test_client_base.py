@@ -1,0 +1,1100 @@
+import asyncio
+import base64
+from datetime import date
+from decimal import Decimal
+
+import httpx
+
+from app.client_base import APPLICATION_STATUSES, ClientBaseClient, ClientBaseError
+from app.models import (
+    AddMeterRequest,
+    AddNomenclatureRequest,
+    ApplicationSummary,
+    NomenclatureItem,
+)
+
+
+def test_application_details_reuses_second_phone_from_summary():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "address_id": "f11430", "floor": "f11270", "entrance": "f11280",
+            "entrance_code": "f11710", "metrolog_comments": "f17940",
+        }
+
+        async def fake_request(_method, _path, **_kwargs):
+            return {"data": {"id": "40006", "attributes": {"f11430": "17"}}}
+
+        async def fake_summary(_item):
+            return ApplicationSummary(
+                id=40006, number="39967", status="Новая", phone_number="1",
+                phone_number_2="2",
+            )
+
+        async def empty(*_args, **_kwargs):
+            return []
+
+        client._request = fake_request
+        client._summary = fake_summary
+        client._water_meters_by_address = empty
+        client._application_photos = empty
+        result = await client.get_application(40006)
+        assert result.phone_number_2 == "2"
+
+    asyncio.run(run_test())
+
+
+def test_rework_reasons_are_read_from_field_metadata():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {"rework_reason": "f13630"}
+
+        async def fake_request(method, path, **kwargs):
+            assert method == "GET"
+            assert path == "table/130"
+            assert kwargs["params"] == {"include": "fields"}
+            return {
+                "data": {"attributes": {"fields": [
+                    {"id": "13630", "name": "Причина", "options": [
+                        {"value": "Клиент не отвечает"},
+                        {"value": "Перенос даты"},
+                    ]}
+                ]}}
+            }
+
+        client._request = fake_request
+        assert await client.rework_reasons() == ["Клиент не отвечает", "Перенос даты"]
+
+    asyncio.run(run_test())
+
+
+def test_send_to_rework_writes_date_reason_comment_and_status():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "rework_call_date": "f13620",
+            "rework_reason": "f13630",
+            "metrolog_comments": "f17940",
+            "status": "f1680",
+        }
+        captured = {}
+
+        async def fake_request(method, path, **kwargs):
+            captured.update(method=method, path=path, body=kwargs["json"])
+            return {}
+
+        client._request = fake_request
+        await client.send_to_rework(40005, "Перенос даты", "Позвонить завтра")
+        attrs = captured["body"]["data"]["attributes"]
+        assert captured["method"] == "PATCH"
+        assert captured["path"] == "data130/40005"
+        assert attrs == {
+            "f13620": date.today().isoformat(),
+            "f13630": "Перенос даты",
+            "f17940": "Позвонить завтра",
+            "f1680": "На Доработку",
+        }
+
+    asyncio.run(run_test())
+
+
+def test_list_all_loads_every_page():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        calls = []
+
+        async def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs["params"]))
+            offset = kwargs["params"]["page[offset]"]
+            if offset == 0:
+                return {"data": [{"id": str(i)} for i in range(50)]}
+            if offset == 50:
+                return {"data": [{"id": "50"}]}
+            raise AssertionError(f"unexpected offset: {offset}")
+
+        client._request = fake_request
+        rows = await client._list_all("data130", filter_expression="eq(status,0)")
+
+        assert len(rows) == 51
+        assert [call[2]["page[offset]"] for call in calls] == [0, 50]
+        assert all(call[2]["page[limit]"] == 50 for call in calls)
+        assert all(call[2]["filter"] == "eq(status,0)" for call in calls)
+
+    asyncio.run(run_test())
+
+
+def test_application_status_counts_keeps_defined_order_and_zeroes():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "application_metrolog_id": "f1740",
+            "status": "f1680",
+        }
+
+        async def fake_employee_id(_crm_login):
+            return 17
+
+        async def fake_list_all(_path, **_kwargs):
+            return [
+                {"attributes": {"f1680": "Новая"}},
+                {"attributes": {"f1680": "Новая"}},
+                {"attributes": {"f1680": "Выполнено"}},
+                {"attributes": {"f1680": "Неизвестный статус"}},
+            ]
+
+        client._employee_id = fake_employee_id
+        client._list_all = fake_list_all
+        result = await client.application_status_counts("demchenko")
+
+        assert [item.status for item in result] == ["Всего", *APPLICATION_STATUSES]
+        assert [item.count for item in result] == [4, 2, 1, 0, 0, 0]
+
+    asyncio.run(run_test())
+
+
+def test_application_status_counts_recognizes_postponed_refusals_and_aliases():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "application_metrolog_id": "f1740",
+            "status": "f1680",
+        }
+
+        async def fake_employee_id(_crm_login):
+            return 17
+
+        async def fake_list_all(_path, **_kwargs):
+            return [
+                {"attributes": {"f1680": "Отложена"}},
+                {"attributes": {"f1680": "В отложке"}},
+                {"attributes": {"f1680": "Отказ клиента"}},
+                {"attributes": {"f1680": "Отменено"}},
+            ]
+
+        client._employee_id = fake_employee_id
+        client._list_all = fake_list_all
+        result = await client.application_status_counts("demchenko")
+        counts = {item.status: item.count for item in result}
+
+        assert counts["Всего"] == 4
+        assert counts["Отложено"] == 2
+        assert counts["Отказ"] == 2
+
+    asyncio.run(run_test())
+
+
+def test_company_applications_do_not_add_employee_filter():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {"status": "f1680", "work_date": "f1710"}
+        captured = {}
+
+        async def fake_list_all(_path, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        client._list_all = fake_list_all
+        result = await client.list_company_applications(
+            "Новая", date(2026, 9, 25)
+        )
+
+        assert result == []
+        expression = captured["filter_expression"]
+        assert "eq(f1680,'Новая')" in expression
+        assert "gte(f1710,'2026-09-25 00:00:00')" in expression
+        assert "application_metrolog_id" not in expression
+
+    asyncio.run(run_test())
+
+
+def test_company_tracking_query_is_lightweight_and_date_scoped():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "number": "number",
+            "status": "status_field",
+            "work_date": "date_field",
+        }
+        captured = {}
+
+        async def fake_list_all(_path, **kwargs):
+            captured.update(kwargs)
+            return [{
+                "id": "42",
+                "attributes": {
+                    "number": "39962",
+                    "status_field": "Выполнено",
+                    "date_field": "2026-09-25",
+                },
+            }]
+
+        client._list_all = fake_list_all
+        result = await client.list_company_tracking_applications(date(2026, 9, 25))
+
+        assert result[0].id == 42
+        assert result[0].status == "Выполнено"
+        expression = captured["filter_expression"]
+        assert "gte(date_field,'2026-09-25 00:00:00')" in expression
+        assert "lte(date_field,'2026-09-25 23:59:59')" in expression
+
+    asyncio.run(run_test())
+
+
+def test_application_map_points_skips_empty_and_unresolved_addresses():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+
+        async def fake_list_applications(*_args, **_kwargs):
+            return [
+                ApplicationSummary(id=1, number="101", address="Новгород, ул. Мира, 1", status="Новая"),
+                ApplicationSummary(id=2, number="102", address="", status="Новая"),
+                ApplicationSummary(id=3, number="103", address="Неизвестный адрес", status="Выполнено"),
+            ]
+
+        async def fake_dadata(address):
+            if not address.startswith("Новгород"):
+                return None
+            return {
+                "display_address": "ул Мира, д 1",
+                "full_address": "г Великий Новгород, ул Мира, д 1",
+                "latitude": 58.52,
+                "longitude": 31.27,
+            }
+
+        client.list_applications = fake_list_applications
+        client._dadata_address = fake_dadata
+        result = await client.application_map_points("metrolog", date(2026, 9, 24))
+        assert len(result) == 1
+        assert result[0].application_id == 1
+        assert result[0].latitude == 58.52
+        assert result[0].longitude == 31.27
+
+    asyncio.run(run_test())
+
+
+def test_compact_address_removes_area_and_apartment():
+    address = "(Юго-Западный, Черемушки) ул Перекопская, д 17, к 5, кв 335"
+    assert ClientBaseClient._compact_address(address) == "Москва, ул Перекопская, д 17, к 5"
+
+
+def test_dadata_street_and_house_excludes_district_and_apartment():
+    result = ClientBaseClient._dadata_street_and_house(
+        {
+            "city_area": "Юго-Западный",
+            "city_district": "Черемушки",
+            "street_with_type": "ул Перекопская",
+            "house_type": "д",
+            "house": "17",
+            "block_type": "к",
+            "block": "5",
+            "flat": "335",
+        },
+        "fallback",
+    )
+    assert result == "ул Перекопская, д 17, к 5"
+
+
+def test_dadata_suggestions_response_is_used_for_coordinates(monkeypatch):
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.dadata_api_key = "test-token"
+        client.timeout = 20
+        client._cache_get = lambda _key: None
+        cached = {}
+        client._cache_set = lambda key, value, _ttl: cached.update({key: value})
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"suggestions": [{
+                    "value": "г Москва, ул Тверская, д 1",
+                    "unrestricted_value": "125009, г Москва, ул Тверская, д 1",
+                    "data": {
+                        "street_with_type": "ул Тверская",
+                        "house_type": "д", "house": "1",
+                        "geo_lat": "55.7569854", "geo_lon": "37.6140387",
+                    },
+                }]}
+
+        class FakeHttpClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, url, **kwargs):
+                assert "/suggest/address" in url
+                assert kwargs["json"]["count"] == 1
+                assert "X-Secret" not in kwargs["headers"]
+                return FakeResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeHttpClient())
+        result = await client._dadata_address("Москва, Тверская, 1")
+
+        assert result["latitude"] == 55.7569854
+        assert result["longitude"] == 37.6140387
+        assert result["display_address"] == "ул Тверская, д 1"
+        assert cached
+
+    asyncio.run(run_test())
+
+
+def test_metrolog_warehouse_uses_authenticated_clientbase_user():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "warehouse_user": "f13030",
+            "warehouse_name": "f13040",
+            "warehouse_incoming": "f13050",
+            "warehouse_outgoing": "f13060",
+            "warehouse_balance": "f13070",
+            "warehouse_written_off": "f13831",
+            "warehouse_defect_quantity": "f13771",
+            "warehouse_defect_position": "f13781",
+            "warehouse_writeoff_goods": "f13821",
+            "warehouse_service_writeoff": "f15811",
+            "warehouse_total_written_off": "f15821",
+        }
+
+        async def fake_user_id(login):
+            assert login == "metrolog.login"
+            return 460
+
+        async def fake_list_all(path, **kwargs):
+            assert path == "data760"
+            assert kwargs["filter_expression"] == (
+                "and(eq(status,0),eq(f13030,460))"
+            )
+            return [{
+                "id": "15",
+                "attributes": {
+                    "f13040": "91",
+                    "f13050": "10",
+                    "f13060": "3",
+                    "f13070": "7",
+                    "f13831": "1",
+                    "f13771": "2",
+                    "f13781": "0",
+                    "f13821": "4",
+                    "f15811": "1",
+                    "f15821": "5",
+                },
+            }]
+
+        async def fake_price_name(value):
+            assert value == "91"
+            return "Счётчик ЭКО НОМ"
+
+        client._user_id = fake_user_id
+        client._list_all = fake_list_all
+        client._price_list_name = fake_price_name
+
+        result = await client.metrolog_warehouse("metrolog.login")
+        assert len(result) == 1
+        assert result[0].name == "Счётчик ЭКО НОМ"
+        assert result[0].balance == "7"
+        assert result[0].total_written_off == "5"
+
+    asyncio.run(run_test())
+
+
+def test_water_meters_are_loaded_by_address():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "meter_address_id": "f11180",
+            "meter_device_kind": "f10540",
+            "meter_type": "f10580",
+            "meter_modification": "f16061",
+            "meter_accuracy_class": "f16071",
+            "meter_serial_number": "f10550",
+            "meter_registry_number": "f16051",
+            "meter_year": "f16081",
+            "meter_last_check": "f10560",
+            "meter_next_check": "f10570",
+            "meter_status": "f12740",
+            "meter_reading": "f16131",
+            "meter_device_photo": "f17860",
+            "meter_passport_photo": "f18021",
+        }
+        calls = []
+
+        async def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs["params"]))
+            return {
+                "data": [
+                    {
+                        "id": "7",
+                        "attributes": {
+                            "f10540": "Счётчик воды",
+                            "f10550": "SN-7",
+                        },
+                    }
+                ]
+            }
+
+        client._request = fake_request
+        result = await client._water_meters_by_address(42)
+
+        assert len(result) == 1
+        assert result[0].serial_number == "SN-7"
+        assert calls[0][1] == "data610"
+        assert "eq(f11180,42)" in calls[0][2]["filter"]
+
+    asyncio.run(run_test())
+
+
+def test_nomenclature_field_is_discovered_from_table_metadata():
+    metadata = {
+        "data": {
+            "attributes": {
+                "fields": [
+                    {"id": "f9001", "name": "Связь с заявкой"},
+                    {"id": "f9002", "name": "Наименование из прайс-листа"},
+                ]
+            }
+        }
+    }
+
+    assert ClientBaseClient._find_field_id(metadata, ("заяв",)) == "f9001"
+    assert ClientBaseClient._find_field_id(metadata, ("наименование", "прайс")) == "f9002"
+
+
+def test_table_220_overrides_generic_employee_schedule():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "employee_id": "f1400",
+            "employee_work_days": "f4901",
+            "employee_work_schedule": "f15711",
+            "employee_schedule_control": "f2980",
+            "schedule_employee": "f3110",
+            "schedule_date": "f3120",
+            "schedule_status": "f13391",
+        }
+
+        async def fake_employee_row(_login):
+            return {"id": "501", "attributes": {"f1400": "77", "f15711": "Пн-Пт"}}
+
+        async def fake_list_all(path, **kwargs):
+            assert path == "data220"
+            assert "eq(f3110,501)" in kwargs["filter_expression"]
+            assert "gte(f3120,'2026-09-01 00:00:00')" in kwargs["filter_expression"]
+            return [
+                {"attributes": {"f3110": "501", "f3120": "2026-09-05 00:00:00", "f13391": "Работает"}},
+                {"attributes": {"f3110": "501", "f3120": "2026-09-07 00:00:00", "f13391": "Выходной"}},
+            ]
+
+        client._employee_row = fake_employee_row
+        client._list_all = fake_list_all
+        result = await client.employee_schedule("employee", 2026, 9)
+
+        assert result[4].is_working is True
+        assert result[6].is_working is False
+
+    asyncio.run(run_test())
+
+
+def test_table_220_supports_vacation_status():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "employee_id": "f1400",
+            "employee_work_days": "f4901", "employee_work_schedule": "f15711",
+            "employee_schedule_control": "f2980",
+            "schedule_employee": "f3110", "schedule_date": "f3120",
+            "schedule_status": "f13391",
+        }
+
+        async def fake_employee_row(_login):
+            return {"id": "501", "attributes": {"f1400": "77"}}
+
+        async def fake_list_all(_path, **_kwargs):
+            return [
+                {"attributes": {"f3110": "501", "f3120": "05.09.2026", "f13391": "Отпуск"}},
+            ]
+
+        client._employee_row = fake_employee_row
+        client._list_all = fake_list_all
+        result = await client.employee_schedule("employee", 2026, 9)
+
+        assert result[4].has_record is True
+        assert result[4].is_working is False
+        assert result[4].work_status == "Отпуск"
+
+    asyncio.run(run_test())
+
+
+def test_numeric_field_id_and_nested_file_content_are_normalized():
+    metadata = {"data": {"attributes": {"fields": [{"id": 9200, "name": "Цена"}]}}}
+    payload = {"data": {"attributes": {"name": "pic.png", "content": "YWJj"}}}
+
+    assert ClientBaseClient._find_field_id(metadata, ("цена",)) == "f9200"
+    assert ClientBaseClient._extract_file_data(payload)["content"] == "YWJj"
+
+
+def test_nomenclature_probes_subtable_relation_field():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "nomenclature_application_id": "",
+            "nomenclature_name": "f8080",
+            "nomenclature_price": "f8090",
+            "nomenclature_quantity": "f8100",
+            "nomenclature_total": "f8110",
+        }
+
+        async def fake_request(method, path, **kwargs):
+            if path == "table/351":
+                return {"data": {"attributes": {}}}
+            params = kwargs["params"]
+            if params.get("page[limit]") == 1:
+                return {
+                    "data": [{"id": "1", "attributes": {
+                        "f8080": "Работа", "f8090": "100", "f8100": "2",
+                        "f8110": "200", "f9990": "39801",
+                    }}]
+                }
+            if "f9990" in params["filter"]:
+                return {"data": [{"id": "1", "attributes": {
+                    "f8080": "Работа", "f8090": "100", "f8100": "2",
+                    "f8110": "200", "f9990": "39801",
+                }}]}
+            return {"data": []}
+
+        client._request = fake_request
+        result = await client.nomenclature(39801)
+
+        assert len(result) == 1
+        assert result[0].name == "Работа"
+        assert result[0].total == "200"
+
+    asyncio.run(run_test())
+
+
+def test_nomenclature_does_not_probe_when_relation_field_is_configured():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "nomenclature_application_id": "f5651",
+            "nomenclature_name": "f8080",
+            "nomenclature_price": "f8090",
+            "nomenclature_quantity": "f8100",
+            "nomenclature_total": "f8110",
+        }
+        calls = []
+
+        async def fake_request(method, path, **kwargs):
+            calls.append((path, kwargs.get("params", {})))
+            return {"data": []}
+
+        client._request = fake_request
+        result = await client.nomenclature(39516)
+
+        assert result == []
+        assert len(calls) == 1
+        assert calls[0][0] == "data351"
+        assert "eq(f5651,39516)" in calls[0][1]["filter"]
+
+    asyncio.run(run_test())
+
+
+def test_employee_equipment_is_built_from_employee_card():
+    client = object.__new__(ClientBaseClient)
+    field_names = (
+        "equipment_installation_name", "equipment_installation_serial",
+        "equipment_installation_registry", "equipment_installation_certificate",
+        "equipment_installation_date", "equipment_installation_arshin",
+        "equipment_stopwatch_name", "equipment_stopwatch_serial",
+        "equipment_stopwatch_registry", "equipment_stopwatch_date",
+        "equipment_stopwatch_arshin", "equipment_hygrometer_name",
+        "equipment_hygrometer_serial", "equipment_hygrometer_registry",
+        "equipment_hygrometer_date", "equipment_hygrometer_arshin",
+        "equipment_thermometer_name", "equipment_thermometer_serial",
+        "equipment_thermometer_registry", "equipment_thermometer_date",
+        "equipment_thermometer_arshin", "equipment_acquiring_name",
+        "equipment_acquiring_serial",
+    )
+    client.fields = {name: f"f{index}" for index, name in enumerate(field_names)}
+    attrs = {
+        client.fields["equipment_installation_name"]: "Стандарт-ВМ",
+        client.fields["equipment_acquiring_name"]: "POS Terminal",
+    }
+
+    equipment = client._employee_equipment(attrs)
+
+    assert [item.category for item in equipment] == [
+        "Поверочная установка", "Секундомер", "Термогигрометр",
+        "Термометр", "Эквайринг",
+    ]
+    assert equipment[0].name == "Стандарт-ВМ"
+    assert equipment[-1].name == "POS Terminal"
+
+
+def test_file_list_fallback_selects_requested_filename():
+    payload = {
+        "data": [
+            {"attributes": {"name": "first.png", "content": "MQ=="}},
+            {"attributes": {"name": "pic1.png", "content": "Mg=="}},
+        ]
+    }
+
+    result = ClientBaseClient._extract_file_data(payload, "pic1.png")
+
+    assert result["content"] == "Mg=="
+
+
+def test_price_list_relation_is_resolved_to_name():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {"price_list_name": "f1158"}
+
+        async def fake_request(method, path, **kwargs):
+            assert method == "GET"
+            assert path == "data91/24"
+            return {"data": {"attributes": {"f1158": "Удлинитель 1/2"}}}
+
+        client._request = fake_request
+
+        assert await client._price_list_name("24") == "Удлинитель 1/2"
+
+    asyncio.run(run_test())
+
+
+def test_binary_file_response_is_converted_to_base64():
+    response = httpx.Response(
+        200,
+        headers={"content-type": "image/png"},
+        content=b"\x89PNG\r\n",
+    )
+
+    encoded = ClientBaseClient._decode_file_response(response, "pic.png")
+
+    assert base64.b64decode(encoded) == b"\x89PNG\r\n"
+
+
+def test_json_file_response_keeps_clientbase_base64():
+    response = httpx.Response(
+        200,
+        headers={"content-type": "application/vnd.api+json"},
+        json={"data": {"name": "pic.png", "content": "YWJj"}},
+    )
+
+    assert ClientBaseClient._decode_file_response(response, "pic.png") == "YWJj"
+
+
+def test_deleting_only_file_does_not_download_broken_file():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+
+        async def fake_request(method, path, **kwargs):
+            assert path == "data130/39801"
+            return {"data": {"attributes": {"f12770": "pic1.png"}}}
+
+        async def unexpected_photo_content(*_args, **_kwargs):
+            raise AssertionError("deleted file must not be downloaded")
+
+        client._request = fake_request
+        client.photo_content = unexpected_photo_content
+
+        files = await client._file_payloads(
+            39801, "f12770", exclude_filename="pic1.png"
+        )
+
+        assert files == []
+
+    asyncio.run(run_test())
+
+
+def test_photo_is_searched_in_other_photo_fields_after_404():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "photo_act": "f1730",
+            "photo_replacement_act": "f12770",
+        }
+        calls = []
+
+        async def fake_download(application_id, field, filename):
+            calls.append((application_id, field, filename))
+            if field == "f12770":
+                raise ClientBaseError("not found", status_code=404)
+            return "YWJj"
+
+        client._download_photo = fake_download
+
+        content = await client.photo_content(39801, "f12770", "pic1.png")
+
+        assert content == "YWJj"
+        assert [call[1] for call in calls] == ["f12770", "f1730"]
+
+    asyncio.run(run_test())
+
+
+def test_add_nomenclature_uses_application_and_price_list_relations():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "price_list_name": "f1158", "price_list_price": "f1169",
+            "nomenclature_application_id": "f5651", "nomenclature_name": "f5671",
+            "nomenclature_name_fallback": "f5681", "nomenclature_price": "f5701",
+            "nomenclature_quantity": "f5711", "nomenclature_total": "f5721",
+        }
+        created = {}
+
+        async def fake_request(method, path, **kwargs):
+            if path == "data91/24":
+                return {"data": {"attributes": {"f1158": "Кран", "f1169": "250"}}}
+            created.update(kwargs["json"]["data"]["attributes"])
+            return {"data": {}}
+
+        client._request = fake_request
+        await client.add_nomenclature(39801, AddNomenclatureRequest(price_list_id=24, quantity=2))
+
+        assert created["f5651"] == "39801"
+        assert created["f5671"] == "24"
+        assert created["f5681"] == "Кран"
+        assert created["f5721"] == "500.0"
+
+    asyncio.run(run_test())
+
+
+def test_application_access_is_limited_to_assigned_employee():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {"application_metrolog_id": "f1740"}
+
+        async def fake_employee_id(login):
+            return 17 if login == "assigned" else 18
+
+        async def fake_request(_method, _path, **_kwargs):
+            return {"data": {"attributes": {"f1740": "17"}}}
+
+        client._employee_id = fake_employee_id
+        client._request = fake_request
+
+        await client.ensure_application_access(39555, "assigned")
+        try:
+            await client.ensure_application_access(39555, "other")
+        except ClientBaseError as exc:
+            assert exc.status_code == 403
+        else:
+            raise AssertionError("access to another employee's application was allowed")
+
+    asyncio.run(run_test())
+
+
+def test_price_list_contains_only_bot_services_and_warehouse_materials():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "price_list_name": "f1158",
+            "price_list_price": "f1169",
+            "price_list_category": "f1157",
+            "price_list_warehouse": "f13291",
+            "price_list_bot_enabled": "f13980",
+            "price_list_type": "f2900",
+        }
+
+        async def fake_list_all(path, filter_expression=None):
+            assert path == "data91"
+            return [
+                {"id": "1", "attributes": {
+                    "f1158": "Поверка", "f1169": "1000", "f1157": "Услуга",
+                    "f13291": "Нет", "f13980": "Да",
+                }},
+                {"id": "2", "attributes": {
+                    "f1158": "Счётчик", "f1169": "2200", "f1157": "Товар",
+                    "f13291": "Да", "f13980": "Да",
+                }},
+                {"id": "3", "attributes": {
+                    "f1158": "Скрытая услуга", "f1169": "500", "f1157": "Услуга",
+                    "f13291": "Нет", "f13980": "Нет",
+                }},
+                {"id": "4", "attributes": {
+                    "f1158": "Товар не со склада", "f1169": "100", "f1157": "Товар",
+                    "f13291": "Нет", "f13980": "Да",
+                }},
+            ]
+
+        client._list_all = fake_list_all
+        result = await client.price_list()
+
+        assert [(item.name, item.item_kind) for item in result] == [
+            ("Поверка", "service"),
+            ("Счётчик", "material"),
+        ]
+
+    asyncio.run(run_test())
+
+
+def test_price_list_uses_readable_type_when_category_is_relation_id():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "price_list_name": "f1158",
+            "price_list_price": "f1169",
+            "price_list_category": "f1157",
+            "price_list_warehouse": "f13291",
+            "price_list_bot_enabled": "f13980",
+            "price_list_type": "f2900",
+        }
+
+        async def fake_list_all(path, filter_expression=None):
+            return [
+                {"id": "1", "attributes": {
+                    "f1158": "Поверка", "f1169": "1000", "f1157": "17",
+                    "f2900": "Услуга", "f13291": {"value": "Нет"},
+                    "f13980": {"value": "Да"},
+                }},
+                {"id": "2", "attributes": {
+                    "f1158": "Счётчик", "f1169": "2200", "f1157": "18",
+                    "f2900": "Товар", "f13291": {"value": True},
+                    "f13980": {"value": True},
+                }},
+            ]
+
+        client._list_all = fake_list_all
+        result = await client.price_list()
+
+        assert [(item.name, item.item_kind) for item in result] == [
+            ("Поверка", "service"),
+            ("Счётчик", "material"),
+        ]
+
+    asyncio.run(run_test())
+
+
+def test_reference_catalog_is_persisted_in_local_sqlite(tmp_path):
+    cache_path = tmp_path / "catalogs.sqlite3"
+    writer = object.__new__(ClientBaseClient)
+    writer.cache_path = cache_path
+    writer._cache_set(
+        "catalog:price-list:v4",
+        [{"id": 1, "name": "Поверка", "price": "1000", "item_kind": "service"}],
+        3600,
+    )
+
+    reader = object.__new__(ClientBaseClient)
+    reader.cache_path = cache_path
+
+    assert reader._cache_get("catalog:price-list:v4") == [
+        {"id": 1, "name": "Поверка", "price": "1000", "item_kind": "service"}
+    ]
+
+
+def test_add_meter_links_address_client_and_application():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "address_id": "f11180", "client_id": "f11360",
+            "meter_address_id": "f11180", "meter_client_id": "f11360",
+            "meter_application_id": "f11440", "meter_device_kind": "f10540",
+            "meter_type": "f10580", "meter_serial_number": "f10550",
+            "meter_registry_number": "f16051", "meter_year": "f16081",
+            "meter_last_check": "f10560", "meter_next_check": "f10570",
+            "meter_status": "f12740",
+            "meter_replacement": "f17640",
+            "meter_device_photo": "f17860", "meter_passport_photo": "f18021",
+        }
+        created = {}
+        attached_files = {}
+
+        async def fake_request(method, path, **kwargs):
+            if path == "data130/39801":
+                return {"data": {"attributes": {"f11180": "55", "f11360": "66"}}}
+            if method == "POST" and path == "data610":
+                created.update(kwargs["json"]["data"]["attributes"])
+                return {"data": {"id": "900"}}
+            if method == "PATCH" and path == "data610/900":
+                attached_files.update(kwargs["json"]["data"]["attributes"])
+                return {"data": {"id": "900"}}
+            raise AssertionError((method, path))
+
+        client._request = fake_request
+        await client.add_meter(
+            39801,
+            AddMeterRequest(
+                device_kind="ИПУ ХВС",
+                meter_type="СВК",
+                serial_number="123",
+                device_photo_filename="meter.jpg",
+                device_photo_base64="YWJj",
+            ),
+        )
+
+        assert created["f11180"] == "55"
+        assert created["f11360"] == "66"
+        assert created["f11440"] == "39801"
+        assert created["f10550"] == "123"
+        assert created["f10540"] == "ИПУ ХВС"
+        assert created["f12740"] == "Годен"
+        assert created["f17640"] == "Да"
+        assert "f17860" not in created
+        assert attached_files["f17860"][0]["file_name"] == "meter.jpg"
+
+    asyncio.run(run_test())
+
+
+def test_unfit_meter_with_replacement_sets_required_clientbase_values():
+    client = object.__new__(ClientBaseClient)
+    client.fields = {
+        "address_id": "address", "client_id": "client",
+        "meter_address_id": "meter_address", "meter_client_id": "meter_client",
+        "meter_application_id": "application", "meter_device_kind": "kind",
+        "meter_type": "type", "meter_serial_number": "serial",
+        "meter_registry_number": "registry", "meter_year": "year",
+        "meter_last_check": "last", "meter_next_check": "next",
+        "meter_status": "status", "meter_replacement": "replacement",
+        "meter_device_photo": "photo", "meter_passport_photo": "passport",
+    }
+    command = AddMeterRequest(
+        device_kind="ИПУ ГВС",
+        ipu_status="Не Годен",
+        replacement_done=True,
+        last_check="2026-09-24",
+        next_check="2030-09-23",
+    )
+
+    attrs = client._meter_attributes({"address": "1", "client": "2"}, 3, command)
+
+    assert attrs["status"] == "Не Годен"
+    assert attrs["replacement"] == "Нет"
+    assert attrs["last"] == "2026-09-24 00:00:00"
+    assert "next" not in attrs
+
+
+def test_new_meter_omits_empty_last_verification_date():
+    client = object.__new__(ClientBaseClient)
+    client.fields = {
+        "address_id": "address", "client_id": "client",
+        "meter_address_id": "meter_address", "meter_client_id": "meter_client",
+        "meter_application_id": "application", "meter_device_kind": "kind",
+        "meter_type": "type", "meter_serial_number": "serial",
+        "meter_registry_number": "registry", "meter_year": "year",
+        "meter_last_check": "last", "meter_next_check": "next",
+        "meter_status": "status", "meter_replacement": "replacement",
+        "meter_device_photo": "photo", "meter_passport_photo": "passport",
+    }
+
+    attrs = client._meter_attributes(
+        {"address": "1", "client": "2"},
+        3,
+        AddMeterRequest(
+            device_kind="ИПУ ХВС",
+            ipu_status="Новый",
+            next_check="2030-09-23",
+        ),
+    )
+
+    assert "last" not in attrs
+    assert attrs["next"] == "2030-09-23 00:00:00"
+
+
+def test_meter_catalog_loads_sorted_dictionary_and_searches_both_values():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "meter_catalog_registry_number": "f17120",
+            "meter_catalog_designation": "f17130",
+        }
+
+        async def fake_list_all(path, filter_expression):
+            assert path == "data940"
+            return [
+                {"id": "1", "attributes": {"f17120": "123-45", "f17130": "СВК-15"}},
+                {"id": "2", "attributes": {"f17120": "987-65", "f17130": "Тепловодомер"}},
+            ]
+
+        client._list_all = fake_list_all
+
+        by_registry = await client.meter_catalog("123")
+        by_designation = await client.meter_catalog("тепло")
+        all_items = await client.meter_catalog()
+
+        assert by_registry[0].designation == "СВК-15"
+        assert by_designation[0].registry_number == "987-65"
+        assert [item.designation for item in all_items] == ["СВК-15", "Тепловодомер"]
+
+    asyncio.run(run_test())
+
+
+def test_delete_nomenclature_checks_application_relation():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {"nomenclature_application_id": "f5651"}
+        calls = []
+
+        async def fake_request(method, path, **kwargs):
+            calls.append((method, path))
+            return {"data": {"attributes": {"f5651": "39801"}}}
+
+        client._request = fake_request
+        await client.delete_nomenclature(39801, 77)
+
+        assert calls == [("GET", "data351/77"), ("DELETE", "data351/77")]
+
+    asyncio.run(run_test())
+
+
+def test_period_report_derives_materials_from_services_without_double_counting():
+    async def run_test():
+        client = object.__new__(ClientBaseClient)
+        client.fields = {
+            "application_metrolog_id": "metrolog",
+            "status": "status",
+            "work_date": "date",
+            "cash_sum": "cash",
+            "card_sum": "card",
+        }
+
+        async def fake_employee_id(_crm_login):
+            return 17
+
+        async def fake_list_all(_path, **_kwargs):
+            return [{"id": "10", "attributes": {"cash": "10600", "card": "0"}}]
+
+        async def fake_price_list():
+            return []
+
+        async def fake_nomenclature(_application_id):
+            return [
+                NomenclatureItem(
+                    id=1,
+                    name="Комплекс работ по замене работ ИПУ (ЭКОНОМ 80)",
+                    quantity="2",
+                    total="10600",
+                ),
+                NomenclatureItem(
+                    id=2,
+                    name="Счетчик ЭКО НОМ СВ 15-80",
+                    quantity="2",
+                    total="0",
+                ),
+                NomenclatureItem(
+                    id=3,
+                    name="Замена шарового крана",
+                    quantity="1",
+                    total="2200",
+                ),
+            ]
+
+        client._employee_id = fake_employee_id
+        client._list_all = fake_list_all
+        client.price_list = fake_price_list
+        client._nomenclature = fake_nomenclature
+        client._cache_get = lambda _key: "Да"
+
+        report = await client.period_report("metrolog", date(2026, 9, 1), date(2026, 9, 30))
+        materials = {line.name: line.quantity for line in report.materials}
+
+        assert materials["Счетчик ЭКО НОМ СВ 15-80"] == Decimal("2")
+        assert materials["Кран 1/2"] == Decimal("1")
+        assert report.administrative_expenses_status == "Да"
+        assert report.administrative_expenses == Decimal("750.00")
+        assert report.metrologist_net == Decimal("4250.00")
+
+    asyncio.run(run_test())

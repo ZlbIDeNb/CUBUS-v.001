@@ -1,0 +1,71 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+local.properties
+**/local.properties
+*.jks
+*.keystore
+*.pem
+*.key
+
+# Runtime databases, documents, releases and caches
+*.sqlite
+*.sqlite3
+*.db
+backend/server_auth/
+backend/server_documents/
+backend/server_registry/
+backend/releases/
+backend/client_base_cache.sqlite3
+backend/.vendor/
+.vendor/
+
+# Python
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Android, Gradle and IDE
+.gradle/
+.gradle-*/
+.gradle-home/
+.gradle-user/
+**/.gradle/
+**/.gradle-*/
+.kotlin/
+**/.kotlin/
+.idea/
+**/.idea/
+**/build/
+.android-*/
+.jbr/
+.tools/
+.user-profile/
+android/.android-home/
+android/.tmp/
+
+# Generated packages and local tooling
+*.apk
+*.idsig
+*.zip
+*.log
+adb-start.log
+analytics.settings
+android-test-inventory/
+cubus-server-*-package-*/
+cubus-server-*/
+start-adb.cmd
+
+# Operating systems
+.DS_Store
+Thumbs.db
+desktop.ini

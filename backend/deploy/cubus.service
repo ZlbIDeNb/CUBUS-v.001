@@ -1,0 +1,23 @@
+[Unit]
+Description=CUBUS mobile API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cubus
+Group=cubus
+WorkingDirectory=/opt/cubus
+EnvironmentFile=/opt/cubus/.env
+ExecStart=/opt/cubus/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/cubus
+
+[Install]
+WantedBy=multi-user.target
